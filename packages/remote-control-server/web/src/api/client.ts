@@ -1,6 +1,9 @@
 import type { Session, Environment, ControlResponse, SessionEvent } from "../types";
 
 const BASE = "";
+const UUID_STORAGE_KEY = "rcs_uuid";
+
+let inMemoryUuid: string | null = null;
 
 function generateUuid(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -12,16 +15,34 @@ function generateUuid(): string {
 }
 
 export function getUuid(): string {
-  let uuid = localStorage.getItem("rcs_uuid");
+  let uuid = inMemoryUuid;
+
+  try {
+    uuid ??= localStorage.getItem(UUID_STORAGE_KEY);
+  } catch {
+    // localStorage may be unavailable in privacy-restricted contexts
+  }
+
   if (!uuid) {
     uuid = generateUuid();
-    localStorage.setItem("rcs_uuid", uuid);
+    try {
+      localStorage.setItem(UUID_STORAGE_KEY, uuid);
+    } catch {
+      // Fall back to in-memory UUID when storage is unavailable.
+    }
   }
+
+  inMemoryUuid = uuid;
   return uuid;
 }
 
 export function setUuid(uuid: string): void {
-  localStorage.setItem("rcs_uuid", uuid);
+  inMemoryUuid = uuid;
+  try {
+    localStorage.setItem(UUID_STORAGE_KEY, uuid);
+  } catch {
+    // localStorage may be unavailable in privacy-restricted contexts
+  }
 }
 
 /** Active API token for Authorization header (set by useTokens) */
