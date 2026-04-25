@@ -1,0 +1,117 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─────────────────────────────────────────────────────────────
+   Claude (Anthropic) inspired design system.
+   All tokens warm-toned. HSL only.
+   ───────────────────────────────────────────────────────────── */
+
+@layer base {
+  :root {
+    /* Surfaces */
+    --parchment:        48 28% 95%;   /* #f5f4ed */
+    --ivory:            48 27% 97%;   /* #faf9f5 */
+    --warm-sand:        48 21% 89%;   /* #e8e6dc */
+    --dark-surface:     60 3% 19%;    /* #30302e */
+    --near-black:       60 3% 8%;     /* #141413 */
+    --deep-bg:          30 6% 5%;     /* #0e0d0c page bg behind window */
+
+    /* Text */
+    --foreground:       60 3% 8%;     /* near-black */
+    --charcoal-warm:    50 4% 29%;    /* #4d4c48 */
+    --olive-gray:       45 3% 36%;    /* #5e5d59 */
+    --stone-gray:       50 3% 51%;    /* #87867f */
+    --dark-warm:        60 3% 24%;    /* #3d3d3a */
+    --warm-silver:      48 6% 67%;    /* #b0aea5 */
+
+    /* Brand */
+    --terracotta:       16 56% 53%;   /* #c96442 */
+    --coral:            16 60% 60%;   /* #d97757 */
+
+    /* Borders / rings */
+    --border-cream:     45 24% 92%;   /* #f0eee6 */
+    --border-warm:      48 21% 89%;   /* #e8e6dc */
+    --border-dark:      60 3% 19%;    /* #30302e */
+    --ring-warm:        48 9% 77%;    /* #d1cfc5 */
+
+    /* Semantic */
+    --error-crimson:    0 56% 45%;    /* #b53333 */
+    --focus-blue:       208 82% 57%;  /* #3898ec */
+    --diff-green-bg:    143 64% 88%;
+    --diff-green-fg:    142 64% 24%;
+    --warn-bg:          24 100% 98%;
+    --warn-border:      22 71% 86%;
+
+    /* Shadcn aliases (kept warm) */
+    --background:       var(--parchment);
+    --card:             var(--ivory);
+    --card-foreground:  var(--foreground);
+    --popover:          var(--near-black);
+    --popover-foreground: var(--warm-silver);
+
+    --primary:          var(--terracotta);
+    --primary-foreground: var(--ivory);
+
+    --secondary:        var(--warm-sand);
+    --secondary-foreground: var(--charcoal-warm);
+
+    --muted:            var(--border-cream);
+    --muted-foreground: var(--olive-gray);
+
+    --accent:           var(--warm-sand);
+    --accent-foreground: var(--near-black);
+
+    --destructive:      var(--error-crimson);
+    --destructive-foreground: var(--ivory);
+
+    --border:           var(--border-cream);
+    --input:            var(--border-warm);
+    --ring:             var(--focus-blue);
+
+    --radius: 0.75rem;
+
+    /* Shadows */
+    --shadow-ring:        0 0 0 1px hsl(var(--ring-warm));
+    --shadow-ring-strong: 0 0 0 1px hsl(48 6% 70%);
+    --shadow-whisper:     0 4px 24px hsl(0 0% 0% / 0.05);
+    --shadow-window:      0 40px 100px hsl(0 0% 0% / 0.75), 0 0 0 1px hsl(0 0% 100% / 0.07);
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'DM Sans', system-ui, sans-serif;
+  }
+  .font-serif-display {
+    font-family: 'DM Serif Display', Georgia, serif;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+  .font-mono-claude {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+  }
+}
+
+/* Warm scrollbars */
+@layer utilities {
+  .scrollbar-warm::-webkit-scrollbar { width: 4px; height: 4px; }
+  .scrollbar-warm::-webkit-scrollbar-thumb {
+    background: hsl(var(--border-warm));
+    border-radius: 2px;
+  }
+  .scrollbar-warm-thin::-webkit-scrollbar { width: 3px; }
+  .scrollbar-warm-thin::-webkit-scrollbar-thumb {
+    background: hsl(var(--border-warm));
+    border-radius: 2px;
+  }
+}
+
+/* Selection tooltip enter animation */
+@keyframes tt-in {
+  from { opacity: 0; transform: scale(.94) translateY(3px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.animate-tt-in { animation: tt-in .13s cubic-bezier(.2,0,.2,1); }

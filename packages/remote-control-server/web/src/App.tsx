@@ -46,13 +46,23 @@ export default function App() {
     // Check for ACP direct connection (?acp=1)
     const acpParam = params.get("acp");
     if (acpParam === "1") {
-      const stored = sessionStorage.getItem("acp_connection");
+      let stored: string | null = null;
+      try {
+        stored = sessionStorage.getItem("acp_connection");
+      } catch {
+        stored = null;
+      }
+
       if (stored) {
         try {
           const acpData = JSON.parse(stored);
           if (acpData.url && acpData.token) {
             setAcpDirect({ url: acpData.url, token: acpData.token });
-            sessionStorage.removeItem("acp_connection");
+            try {
+              sessionStorage.removeItem("acp_connection");
+            } catch {
+              // Ignore sessionStorage cleanup failures and continue rendering.
+            }
             // Clean URL
             const url = new URL(window.location.href);
             url.searchParams.delete("acp");
@@ -60,7 +70,11 @@ export default function App() {
             return;
           }
         } catch {
-          sessionStorage.removeItem("acp_connection");
+          try {
+            sessionStorage.removeItem("acp_connection");
+          } catch {
+            // Ignore sessionStorage cleanup failures after parse errors.
+          }
         }
       }
     }

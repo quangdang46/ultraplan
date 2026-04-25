@@ -1,0 +1,31 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - link "Remote Control" [ref=e6] [cursor=pointer]:
+        - /url: /code/
+        - img [ref=e7]
+        - generic [ref=e9]: Remote Control
+      - generic [ref=e10]:
+        - link "Dashboard" [ref=e11] [cursor=pointer]:
+          - /url: /code/
+          - img [ref=e12]
+          - generic [ref=e17]: Dashboard
+        - button "Toggle theme" [ref=e18]:
+          - img
+          - generic [ref=e19]: Toggle theme
+        - button "Default" [ref=e20]:
+          - img [ref=e21]
+          - generic [ref=e24]: Default
+        - button "Identity" [ref=e25]:
+          - img [ref=e26]
+          - generic [ref=e29]: Identity
+  - generic [ref=e31]:
+    - heading "Dashboard" [level=1] [ref=e32]
+    - generic [ref=e33]:
+      - heading "Environments" [level=2] [ref=e34]
+      - generic [ref=e35]: No active environments
+    - generic [ref=e36]:
+      - generic [ref=e37]:
+        - heading "Sessions" [level=2] [ref=e38]
+        - button "+ New Session" [ref=e39]
+      - generic [ref=e40]: No sessions

@@ -11,10 +11,22 @@ interface ThemeContextValue {
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
 const STORAGE_KEY = "theme";
+const SYSTEM_THEME_QUERY = "(prefers-color-scheme: dark)";
+
+function getSystemMediaQuery(): MediaQueryList | null {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return null;
+  }
+
+  try {
+    return window.matchMedia(SYSTEM_THEME_QUERY);
+  } catch {
+    return null;
+  }
+}
 
 function getSystemTheme(): "light" | "dark" {
-  if (typeof window === "undefined") return "light";
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return getSystemMediaQuery()?.matches ? "dark" : "light";
 }
 
 function getStoredTheme(): Theme {
@@ -76,7 +88,14 @@ export function ThemeProvider({ children, defaultTheme = "system" }: ThemeProvid
   useEffect(() => {
     if (theme !== "system") return;
 
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const mediaQuery = getSystemMediaQuery();
+    if (!mediaQuery) {
+      const fallbackTheme = "light";
+      setResolvedTheme(fallbackTheme);
+      applyTheme(fallbackTheme);
+      return;
+    }
+
     const handleChange = (e: MediaQueryListEvent) => {
       const newTheme = e.matches ? "dark" : "light";
       setResolvedTheme(newTheme);
