@@ -111,6 +111,9 @@ const subscribePr = feature('KAIROS_GITHUB_WEBHOOKS')
 const ultraplan = feature('ULTRAPLAN')
   ? require('./commands/ultraplan.js').default
   : null
+const connectCmd = feature('BRIDGE_MODE')
+  ? require('./commands/connect/index.js').default
+  : null
 const torch = feature('TORCH') ? require('./commands/torch.js').default : null
 const daemonCmd =
   feature('DAEMON') || feature('BG_SESSIONS')
@@ -398,6 +401,7 @@ const COMMANDS = memoize((): Command[] => [
   ...(daemonCmd ? [daemonCmd] : []),
   ...(jobCmd ? [jobCmd] : []),
   ...(forceSnip ? [forceSnip] : []),
+  ...(connectCmd ? [connectCmd] : []),
   summary,
   skillLearning,
   skillSearch,
