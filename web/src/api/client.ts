@@ -3,7 +3,10 @@ import type {
   AuthInitResponse,
   AuthVerifyResponse,
   AuthValidateResponse,
-  ChatRequest,
+  CommandSuggestionsResponse,
+  ExecuteCommandRequest,
+  ExecuteCommandResponse,
+  FileSuggestionsResponse,
   ServerEvent,
   StateResponse,
   ToolsResponse,
@@ -163,7 +166,7 @@ class ApiClient {
   // Tool chat message (non-streaming convenience)
   async sendMessage(message: string): Promise<void> {
     // This is handled via streamChat - kept for compatibility
-    await this.streamChat(message, () => {});
+    await this.streamChat(message);
   }
 
   // Other endpoints
@@ -177,6 +180,34 @@ class ApiClient {
 
   async getState(): Promise<StateResponse> {
     return this.request<StateResponse>('/api/state');
+  }
+
+  async suggestFiles(query: string, cwd?: string): Promise<FileSuggestionsResponse> {
+    const params = new URLSearchParams({ q: query });
+    if (cwd) params.set('cwd', cwd);
+    return this.request<FileSuggestionsResponse>(
+      `/api/suggest/files?${params.toString()}`
+    );
+  }
+
+  async suggestCommands(query: string, cwd?: string): Promise<CommandSuggestionsResponse> {
+    const params = new URLSearchParams({ q: query });
+    if (cwd) params.set('cwd', cwd);
+    return this.request<CommandSuggestionsResponse>(
+      `/api/suggest/commands?${params.toString()}`
+    );
+  }
+
+  async executeCommand(command: string, cwd?: string): Promise<ExecuteCommandResponse> {
+    const payload: ExecuteCommandRequest = { command };
+    const params = new URLSearchParams();
+    if (cwd) params.set('cwd', cwd);
+    const query = params.toString();
+    const url = query ? `/api/command/execute?${query}` : '/api/command/execute';
+    return this.request<ExecuteCommandResponse>(url, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   }
 }
 

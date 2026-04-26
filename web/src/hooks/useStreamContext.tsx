@@ -6,6 +6,7 @@ interface StreamContextValue {
   isStreaming: ReturnType<typeof useStream>['isStreaming'];
   error: ReturnType<typeof useStream>['error'];
   sendMessage: ReturnType<typeof useStream>['sendMessage'];
+  executeSlashCommand: ReturnType<typeof useStream>['executeSlashCommand'];
   cancelStream: ReturnType<typeof useStream>['cancelStream'];
   clearMessages: ReturnType<typeof useStream>['clearMessages'];
 }

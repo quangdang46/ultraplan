@@ -266,6 +266,16 @@ export function useStream() {
     [client, ensureAuthenticated]
   );
 
+  const executeSlashCommand = useCallback(
+    async (command: string): Promise<void> => {
+      const normalized = command.trim();
+      if (!normalized) return;
+      // Keep slash command submission on the same stream path as CLI chat flow.
+      await sendMessage(normalized);
+    },
+    [sendMessage]
+  );
+
   const cancelStream = useCallback(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -280,6 +290,7 @@ export function useStream() {
   return {
     ...state,
     sendMessage,
+    executeSlashCommand,
     cancelStream,
     clearMessages,
   };

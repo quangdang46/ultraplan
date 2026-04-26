@@ -56,6 +56,45 @@ export interface ChatRequest {
   message: string;
 }
 
+export type ComposerSuggestionType = 'file' | 'directory' | 'agent' | 'mcp-resource' | 'command';
+
+export interface FileSuggestion {
+  id?: string;
+  displayText?: string;
+  insertText?: string;
+  type: ComposerSuggestionType;
+  tag?: string;
+  description?: string;
+  path?: string;
+  score?: number;
+}
+
+export interface CommandSuggestion {
+  name: string;
+  description: string;
+  argumentHint?: string;
+}
+
+export interface FileSuggestionsResponse {
+  items: FileSuggestion[];
+  isPartial?: boolean;
+  generation?: number;
+  capApplied?: boolean;
+}
+
+export interface CommandSuggestionsResponse {
+  items: CommandSuggestion[];
+}
+
+export interface ExecuteCommandRequest {
+  command: string;
+}
+
+export interface ExecuteCommandResponse {
+  output: string;
+  clearConversation?: boolean;
+}
+
 export interface ApiError {
   success: false;
   error: string;

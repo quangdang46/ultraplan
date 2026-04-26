@@ -1,6 +1,7 @@
 // Backend query service - integrates with CLI's QueryEngine
 import { randomUUID } from 'crypto'
 import { QueryEngine } from 'src/QueryEngine'
+import { init } from 'src/entrypoints/init'
 import { createAbortController } from 'src/utils/abortController'
 import { createFileStateCacheWithSizeLimit } from 'src/utils/fileStateCache'
 import { getCwd } from 'src/utils/cwd'
@@ -23,6 +24,45 @@ export type ServerEvent =
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyFunction = (...args: any[]) => any
+let runtimeInitPromise: Promise<void> | null = null
+
+async function ensureRuntimeInit(): Promise<void> {
+  if (!runtimeInitPromise) {
+    runtimeInitPromise = init()
+  }
+  await runtimeInitPromise
+}
+
+function extractToolResultText(raw: unknown): string {
+  if (typeof raw === 'string') return raw
+  if (!raw) return ''
+
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item) => {
+        if (typeof item === 'string') return item
+        if (
+          item &&
+          typeof item === 'object' &&
+          'text' in item &&
+          typeof (item as { text?: unknown }).text === 'string'
+        ) {
+          return (item as { text: string }).text
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+
+  if (typeof raw === 'object') {
+    const maybe = raw as { text?: unknown; content?: unknown }
+    if (typeof maybe.text === 'string') return maybe.text
+    if (maybe.content !== undefined) return extractToolResultText(maybe.content)
+  }
+
+  return String(raw)
+}
 
 // Wrap canUseTool to always allow (permissions handled by CLI)
 async function defaultCanUseTool(): Promise<{ behavior: 'allow' }> {
@@ -63,6 +103,8 @@ export async function streamQuery(options: StreamingOptions): Promise<void> {
   }
 
   try {
+    await ensureRuntimeInit()
+
     // Get tools and commands
     const [tools, commands] = await Promise.all([
       getMinimalTools(),
@@ -113,12 +155,12 @@ export async function streamQuery(options: StreamingOptions): Promise<void> {
             }
             // Handle tool_result blocks embedded in assistant message content
             if (block.type === 'tool_result') {
-              const toolResult = block as unknown as { tool_use_id: string; content: Array<{ type: string; text?: string }> }
-              const text = toolResult.content?.find(c => c.type === 'text')?.text || ''
+              const toolResult = block as unknown as { tool_use_id?: string; content?: unknown; text?: unknown }
+              const text = extractToolResultText(toolResult.content ?? toolResult.text)
               onEvent({
                 type: 'tool_result',
                 data: {
-                  toolCallId: toolResult.tool_use_id,
+                  toolCallId: toolResult.tool_use_id ?? '',
                   result: text,
                   exitCode: 0,
                   timeDisplay: '',
@@ -135,9 +177,10 @@ export async function streamQuery(options: StreamingOptions): Promise<void> {
         if (userMsg.message?.content) {
           for (const block of userMsg.message.content) {
             if (block.type === 'tool_result') {
-              // tool_result from user message has text in block.content[0].text
-              const content = block.content as Array<{ type: string; text?: string }> | undefined
-              const text = content?.find(c => c.type === 'text')?.text || ''
+              const text = extractToolResultText(
+                (block as { content?: unknown; text?: unknown }).content ??
+                  (block as { content?: unknown; text?: unknown }).text,
+              )
               const toolCallId = block.tool_use_id || ''
               onEvent({
                 type: 'tool_result',

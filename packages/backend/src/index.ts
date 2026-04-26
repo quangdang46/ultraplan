@@ -50,7 +50,14 @@ export function createServer(options: ServerOptions = {}) {
 
       // Auth check for /api/* routes (except init/verify/validate which handle their own auth)
       console.log('DEBUG auth check:', { path, hasAuth: !!req.headers.get('Authorization'), auth: req.headers.get('Authorization') });
-      if (path.startsWith('/api/') && path !== '/api/auth/init' && path !== '/api/auth/verify' && path !== '/api/auth/validate') {
+      if (
+        path.startsWith('/api/') &&
+        path !== '/api/auth/init' &&
+        path !== '/api/auth/verify' &&
+        path !== '/api/auth/validate' &&
+        path !== '/api/suggest/files' &&
+        path !== '/api/suggest/commands'
+      ) {
         if (!validateApiKey(req.headers.get('Authorization'))) {
           console.log('DEBUG: auth failed for path:', path);
           return createJsonResponse({ success: false, error: 'UNAUTHORIZED' }, 401);
@@ -135,6 +142,42 @@ export function createServer(options: ServerOptions = {}) {
               ...HEADER_CORS,
             },
           });
+        }
+
+        // GET /api/suggest/files
+        if (req.method === 'GET' && path === '/api/suggest/files') {
+          const query = url.searchParams.get('q') ?? ''
+          const cwdParam = url.searchParams.get('cwd')
+          const workspaceRoot = cwdParam && cwdParam.startsWith('/') ? cwdParam : process.cwd()
+          const { suggestFiles } = await import('./composerService.js')
+          const result = await suggestFiles(query, workspaceRoot)
+          return createJsonResponse(result)
+        }
+
+        // GET /api/suggest/commands
+        if (req.method === 'GET' && path === '/api/suggest/commands') {
+          const query = url.searchParams.get('q') ?? ''
+          const cwdParam = url.searchParams.get('cwd')
+          const workspaceRoot = cwdParam && cwdParam.startsWith('/') ? cwdParam : process.cwd()
+          const { suggestCommands } = await import('./composerService.js')
+          const items = await suggestCommands(query, workspaceRoot)
+          return createJsonResponse({ items })
+        }
+
+        // POST /api/command/execute
+        if (req.method === 'POST' && path === '/api/command/execute') {
+          const body = await req.json().catch(() => null) as { command?: string } | null
+          if (!body?.command?.trim()) {
+            return createJsonResponse(
+              { success: false, error: 'INVALID_INPUT', message: 'command is required' },
+              400,
+            )
+          }
+          const { executeSlashCommand } = await import('./composerService.js')
+          const cwdParam = url.searchParams.get('cwd')
+          const workspaceRoot = cwdParam && cwdParam.startsWith('/') ? cwdParam : process.cwd()
+          const result = await executeSlashCommand(body.command, workspaceRoot)
+          return createJsonResponse(result)
         }
 
         // GET /api/tools
