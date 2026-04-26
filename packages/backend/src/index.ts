@@ -49,8 +49,10 @@ export function createServer(options: ServerOptions = {}) {
       }
 
       // Auth check for /api/* routes (except init/verify/validate which handle their own auth)
+      console.log('DEBUG auth check:', { path, hasAuth: !!req.headers.get('Authorization'), auth: req.headers.get('Authorization') });
       if (path.startsWith('/api/') && path !== '/api/auth/init' && path !== '/api/auth/verify' && path !== '/api/auth/validate') {
         if (!validateApiKey(req.headers.get('Authorization'))) {
+          console.log('DEBUG: auth failed for path:', path);
           return createJsonResponse({ success: false, error: 'UNAUTHORIZED' }, 401);
         }
       }

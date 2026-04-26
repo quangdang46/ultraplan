@@ -32,8 +32,9 @@ export function useStream() {
     // If we have a key, validate it - server-side map might have been reset
     if (client.hasApiKey()) {
       try {
-        await client.authValidate();
-        return;
+        const result = await client.authValidate();
+        if (result.valid) return;
+        client.clearApiKey();
       } catch {
         client.clearApiKey();
       }
