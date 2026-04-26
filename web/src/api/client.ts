@@ -123,6 +123,7 @@ class ApiClient {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let currentEventType = '';
 
     try {
       while (true) {
@@ -135,7 +136,7 @@ class ApiClient {
 
         for (const line of lines) {
           if (line.startsWith('event: ')) {
-            const eventType = line.slice(7).trim();
+            currentEventType = line.slice(7).trim();
             continue;
           }
           if (line.startsWith('data: ')) {
@@ -144,13 +145,14 @@ class ApiClient {
 
             try {
               const parsed = JSON.parse(dataStr);
-              // The SSE data format is: event: <type>\ndata: {"type":"...",...}
-              // We need to extract the type from the parsed object
-              const event = parsed as ServerEvent;
-              if (event.type) {
-                onEvent(event);
-                yield event;
-              }
+              // Build event with type from SSE event: field
+              // Format from backend: event: <type>\ndata: {"type":"...",...}
+              const event: ServerEvent = {
+                type: (currentEventType || parsed.type) as ServerEvent['type'],
+                data: parsed.data ?? parsed,
+              };
+              onEvent(event);
+              yield event;
             } catch {
               // Skip invalid JSON
             }

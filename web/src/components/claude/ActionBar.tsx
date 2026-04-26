@@ -4,10 +4,18 @@ import { ArrowUp, GitBranch, GitPullRequest, Terminal, ArrowRight, X } from "luc
 type Props = {
   quote: string | null;
   onClearQuote: () => void;
+  onSend?: (text: string) => void;
 };
 
-export const ActionBar = ({ quote, onClearQuote }: Props) => {
+export const ActionBar = ({ quote, onClearQuote, onSend }: Props) => {
   const [reply, setReply] = useState("");
+
+  const handleSubmit = () => {
+    if (reply.trim() && onSend) {
+      onSend(reply.trim());
+      setReply("");
+    }
+  };
 
   return (
     <div className="border-t border-border-warm bg-parchment px-3.5 pt-[7px] pb-[9px] flex-shrink-0">
@@ -54,12 +62,14 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
         <input
           value={reply}
           onChange={(e) => setReply(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
           placeholder="Reply…"
           className={`w-full bg-white border border-border-warm px-3 py-2 pr-11 text-[12.5px] text-olive-gray font-sans outline-none focus:border-terracotta/50 focus:shadow-[0_0_0_1.5px_hsl(var(--terracotta)/0.15)] transition-all placeholder:text-stone-gray ${
             quote ? "rounded-t-none rounded-b-[10px] border-t-transparent" : "rounded-[10px]"
           }`}
         />
         <button
+          onClick={handleSubmit}
           className="absolute right-[7px] top-1/2 -translate-y-1/2 w-[25px] h-[25px] bg-terracotta hover:bg-coral rounded-md text-white flex items-center justify-center transition-colors"
           aria-label="Send reply"
         >
