@@ -16,6 +16,18 @@ import type {
 
 const DEFAULT_BASE_URL = 'http://localhost:8080';
 
+export class ApiClientError extends Error {
+  code: string;
+  authDomain?: string;
+
+  constructor(code: string, message: string, authDomain?: string) {
+    super(message);
+    this.name = 'ApiClientError';
+    this.code = code;
+    this.authDomain = authDomain;
+  }
+}
+
 class ApiClient {
   private baseUrl: string;
   private apiKey: string | null = null;
@@ -70,7 +82,12 @@ class ApiClient {
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error((data as ApiError).error || 'Request failed');
+      const payload = data as ApiError & { auth_domain?: string };
+      throw new ApiClientError(
+        payload.error || 'REQUEST_FAILED',
+        payload.message || payload.error || 'Request failed',
+        payload.auth_domain,
+      );
     }
 
     return data as T;

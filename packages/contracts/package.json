@@ -1,0 +1,12 @@
+{
+  "name": "@claude-code-best/contracts",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./chat": "./src/chat.ts",
+    "./composer": "./src/composer.ts",
+    "./common": "./src/common.ts"
+  }
+}

@@ -1,4 +1,14 @@
 // API types for Ultraplan backend
+import type {
+  CommandSuggestion,
+  CommandSuggestionsResponse,
+  ComposerSuggestionType,
+  ExecuteCommandRequest,
+  ExecuteCommandResponse,
+  FileSuggestion,
+  FileSuggestionsResponse,
+  ServerEvent,
+} from '../../../packages/contracts/src/index.ts';
 
 export interface AuthInitResponse {
   tempToken: string;
@@ -14,15 +24,7 @@ export interface AuthValidateResponse {
   valid: boolean;
 }
 
-export type ServerEvent =
-  | { type: 'message_start'; data: { id: string } }
-  | { type: 'content_delta'; data: { delta: { type: 'text_delta'; text: string } } }
-  | { type: 'content_block_stop'; data: unknown }
-  | { type: 'message_end'; data: unknown }
-  | { type: 'tool_use'; data: { id: string; name: string; input: Record<string, unknown> } }
-  | { type: 'tool_progress'; data: { toolCallId: string; output?: string; elapsedMs?: number } }
-  | { type: 'tool_result'; data: { toolCallId: string; result: string; exitCode?: number; timeDisplay?: string } }
-  | { type: 'error'; data: { message: string } };
+export type { ServerEvent };
 
 export interface ToolDefinition {
   name: string;
@@ -56,47 +58,19 @@ export interface ChatRequest {
   message: string;
 }
 
-export type ComposerSuggestionType = 'file' | 'directory' | 'agent' | 'mcp-resource' | 'command';
-
-export interface FileSuggestion {
-  id?: string;
-  displayText?: string;
-  insertText?: string;
-  type: ComposerSuggestionType;
-  tag?: string;
-  description?: string;
-  path?: string;
-  score?: number;
-}
-
-export interface CommandSuggestion {
-  name: string;
-  description: string;
-  argumentHint?: string;
-}
-
-export interface FileSuggestionsResponse {
-  items: FileSuggestion[];
-  isPartial?: boolean;
-  generation?: number;
-  capApplied?: boolean;
-}
-
-export interface CommandSuggestionsResponse {
-  items: CommandSuggestion[];
-}
-
-export interface ExecuteCommandRequest {
-  command: string;
-}
-
-export interface ExecuteCommandResponse {
-  output: string;
-  clearConversation?: boolean;
-}
+export type {
+  ComposerSuggestionType,
+  FileSuggestion,
+  CommandSuggestion,
+  FileSuggestionsResponse,
+  CommandSuggestionsResponse,
+  ExecuteCommandRequest,
+  ExecuteCommandResponse,
+};
 
 export interface ApiError {
   success: false;
   error: string;
   message?: string;
+  auth_domain?: 'web_api' | 'bridge_oauth' | 'session_ingress';
 }

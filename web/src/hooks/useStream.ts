@@ -1,54 +1,9 @@
 import { useState, useCallback, useRef } from 'react';
 import { getApiClient } from '../api/client';
 import type { ServerEvent } from '../api/types';
-import type { ToolItem } from '../components/claude/conversation.types';
-
-export interface StreamState {
-  isStreaming: boolean;
-  messages: Message[];
-  activeTools: Map<string, ToolItem>;
-  error: string | null;
-}
-
-export interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  toolCalls: ToolItem[];
-}
-
-function toToolResultText(raw: unknown): string {
-  if (typeof raw === 'string') return raw;
-  if (!raw) return '';
-
-  if (Array.isArray(raw)) {
-    return raw
-      .map((item) => {
-        if (typeof item === 'string') return item;
-        if (
-          item &&
-          typeof item === 'object' &&
-          'text' in item &&
-          typeof (item as { text?: unknown }).text === 'string'
-        ) {
-          return (item as { text: string }).text;
-        }
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n');
-  }
-
-  if (typeof raw === 'object') {
-    const maybeContent = raw as { content?: unknown; text?: unknown };
-    if (typeof maybeContent.text === 'string') return maybeContent.text;
-    if (maybeContent.content !== undefined) {
-      return toToolResultText(maybeContent.content);
-    }
-  }
-
-  return String(raw);
-}
+import type { StreamState, Message, ToolItem } from '../features/chat/types';
+import { toToolResultText } from '../features/chat/streamParser';
+import { ensureApiAuthenticated } from '../features/chat/streamTransport';
 
 export function useStream() {
   const [state, setState] = useState<StreamState>({
@@ -62,19 +17,7 @@ export function useStream() {
   const client = getApiClient();
 
   const ensureAuthenticated = useCallback(async (): Promise<void> => {
-    // If we have a key, validate it - server-side map might have been reset
-    if (client.hasApiKey()) {
-      try {
-        const result = await client.authValidate();
-        if (result.valid) return;
-        client.clearApiKey();
-      } catch {
-        client.clearApiKey();
-      }
-    }
-    // No valid key - do full auth flow
-    const { tempToken } = await client.authInit();
-    await client.authVerify(tempToken);
+    await ensureApiAuthenticated(client);
   }, [client]);
 
   const sendMessage = useCallback(
