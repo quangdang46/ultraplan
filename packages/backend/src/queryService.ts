@@ -94,7 +94,7 @@ export async function streamQuery(options: StreamingOptions): Promise<void> {
 
       // Handle assistant messages with content
       if (e.type === 'assistant') {
-        const assistant = e as { message?: { content?: Array<{ type: string; text?: string }> } }
+        const assistant = e as { message?: { content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown>; content?: Array<{ type: string; text?: string; source?: string; tool_use_id?: string }> }> } }
         if (assistant.message?.content) {
           for (const block of assistant.message.content) {
             if (block.type === 'text' && block.text) {
@@ -111,8 +111,49 @@ export async function streamQuery(options: StreamingOptions): Promise<void> {
                 data: { id: toolUse.id, name: toolUse.name, input: toolUse.input },
               })
             }
+            // Handle tool_result blocks embedded in assistant message content
+            if (block.type === 'tool_result') {
+              const toolResult = block as unknown as { tool_use_id: string; content: Array<{ type: string; text?: string }> }
+              const text = toolResult.content?.find(c => c.type === 'text')?.text || ''
+              onEvent({
+                type: 'tool_result',
+                data: {
+                  toolCallId: toolResult.tool_use_id,
+                  result: text,
+                  exitCode: 0,
+                  timeDisplay: '',
+                },
+              })
+            }
           }
         }
+      }
+
+      // Handle user messages containing tool_result content (from getCompletedResults)
+      if (e.type === 'user') {
+        const userMsg = e as { message?: { content?: Array<{ type: string; text?: string; source?: string; tool_use_id?: string }> } }
+        if (userMsg.message?.content) {
+          for (const block of userMsg.message.content) {
+            if (block.type === 'tool_result') {
+              const text = block.text || ''
+              const toolCallId = block.tool_use_id || ''
+              onEvent({
+                type: 'tool_result',
+                data: {
+                  toolCallId,
+                  result: text,
+                  exitCode: 0,
+                  timeDisplay: '',
+                },
+              })
+            }
+          }
+        }
+      }
+
+      // Handle stream_done event (end of response stream)
+      if (e.type === 'stream_done') {
+        onEvent({ type: 'message_end', data: {} })
       }
     }
 

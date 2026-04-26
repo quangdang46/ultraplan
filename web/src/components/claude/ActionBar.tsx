@@ -1,3 +1,5 @@
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useState } from "react";
 import { ArrowUp, GitBranch, GitPullRequest, Terminal, ArrowRight, X, Pause } from "lucide-react";
 import { useStreamContext } from "../../hooks/useStreamContext";
@@ -58,7 +60,7 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
             </button>
           </div>
           <div className="text-xs text-charcoal-warm leading-[1.5] italic line-clamp-2">
-            "{quote}"
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{quote}</ReactMarkdown>
           </div>
         </div>
       )}

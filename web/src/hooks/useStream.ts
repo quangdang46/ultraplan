@@ -67,14 +67,13 @@ export function useStream() {
         ],
       }));
 
-      // Add placeholder assistant message
-      const assistantMessageId = `assistant_${Date.now()}`;
+      // Add placeholder assistant message - track its index so we can update it
       setState((s) => ({
         ...s,
         messages: [
           ...s.messages,
           {
-            id: assistantMessageId,
+            id: `assistant_placeholder_${Date.now()}`,
             role: 'assistant',
             content: '',
             toolCalls: [],
@@ -89,7 +88,7 @@ export function useStream() {
           console.log('SSE event:', event.type, event.data);
           switch (event.type) {
             case 'message_start': {
-              // Message started - could track ID
+              // Message started - update placeholder content tracking
               break;
             }
 
@@ -100,6 +99,7 @@ export function useStream() {
 
               setState((s) => {
                 const messages = [...s.messages];
+                // Always update the LAST message (our placeholder)
                 const lastMsg = messages[messages.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant') {
                   messages[messages.length - 1] = {
@@ -143,6 +143,7 @@ export function useStream() {
 
             case 'tool_result': {
               // Tool completed
+              console.log('tool_result event:', event.data);
               const resultData = event.data;
 
               setState((s) => {
