@@ -9,7 +9,7 @@ import { getTools } from 'src/tools'
 import { getEmptyToolPermissionContext } from 'src/Tool'
 import { getCommands } from 'src/commands'
 import { getDefaultAppState } from 'src/state/AppStateStore'
-import type { ServerEvent } from '../../contracts/src/index'
+import type { ReplyQuote, ServerEvent } from '../../contracts/src/index'
 import type { Tools } from 'src/Tool'
 import type { Command } from 'src/commands'
 import { mapQueryEventToServerEvents } from './features/chat/streamMapper'
@@ -51,12 +51,20 @@ async function getMinimalCommands(): Promise<Command[]> {
 
 export interface StreamingOptions {
   message: string
+  quote?: ReplyQuote
   onEvent: (event: ServerEvent) => void
   signal?: AbortSignal
 }
 
+function composeUserMessage(message: string, quote?: ReplyQuote): string {
+  if (!quote?.text) return message
+  const quotedLines = quote.text.split('\n').map((line) => `> ${line}`).join('\n')
+  const userRequest = message.trim() || 'Please reply to the quoted context.'
+  return `Quoted context:\n${quotedLines}\n\nUser request:\n${userRequest}`
+}
+
 export async function streamQuery(options: StreamingOptions): Promise<void> {
-  const { message, onEvent, signal } = options
+  const { message, quote, onEvent, signal } = options
   const abortController = createAbortController()
 
   if (signal) {
@@ -93,7 +101,8 @@ export async function streamQuery(options: StreamingOptions): Promise<void> {
     onEvent({ type: 'message_start', data: { id: messageId } })
 
     let emittedMessageEnd = false
-    for await (const event of engine.submitMessage(message)) {
+    const composedMessage = composeUserMessage(message, quote)
+    for await (const event of engine.submitMessage(composedMessage)) {
       const mappedEvents = mapQueryEventToServerEvents(event)
       for (const mappedEvent of mappedEvents) {
         if (mappedEvent.type === 'message_end') {

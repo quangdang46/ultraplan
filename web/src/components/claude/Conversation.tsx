@@ -28,9 +28,20 @@ export function Conversation() {
                   <ConversationToolItem key={tool.id} item={tool} />
                 ))}
 
+              {msg.role === 'user' && msg.quote?.text && (
+                <div className="rounded-lg border border-[#f5d4c4] bg-[#fff8f5] px-3 py-2 text-charcoal-warm">
+                  <div className="mb-1 text-[10.5px] font-semibold tracking-wide text-terracotta">
+                    ↩ Replying to quote
+                  </div>
+                  <div className="text-xs leading-[1.5] italic [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_code]:whitespace-pre-wrap [&_code]:break-words">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.quote.text}</ReactMarkdown>
+                  </div>
+                </div>
+              )}
+
               {msg.content ? (
                 <div
-                  className={`rounded-lg p-3 prose prose-sm max-w-none ${
+                  className={`rounded-lg p-3 prose prose-sm max-w-none [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_code]:whitespace-pre-wrap [&_code]:break-words ${
                     msg.role === 'user'
                       ? 'bg-terracotta text-white prose-invert'
                       : 'bg-warm-sand text-dark-surface prose-stone'

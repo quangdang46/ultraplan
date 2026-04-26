@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import { getApiClient } from '../api/client';
-import type { ServerEvent } from '../api/types';
+import type { ReplyQuote, ServerEvent } from '../api/types';
 import type { StreamState, Message, ToolItem } from '../features/chat/types';
 import { toToolResultText } from '../features/chat/streamParser';
 import { ensureApiAuthenticated } from '../features/chat/streamTransport';
@@ -21,7 +21,7 @@ export function useStream() {
   }, [client]);
 
   const sendMessage = useCallback(
-    async (content: string): Promise<void> => {
+    async (content: string, quote?: ReplyQuote): Promise<boolean> => {
       // Cancel any existing stream
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
@@ -34,13 +34,20 @@ export function useStream() {
 
       // Add user message
       const userMessageId = `user_${Date.now()}`;
+      const userMessage: Message = {
+        id: userMessageId,
+        role: 'user',
+        content,
+        toolCalls: [],
+        quote,
+      };
       setState((s) => ({
         ...s,
         isStreaming: true,
         error: null,
         messages: [
           ...s.messages,
-          { id: userMessageId, role: 'user', content, toolCalls: [] },
+          userMessage,
         ],
       }));
 
@@ -61,7 +68,7 @@ export function useStream() {
       try {
         let currentMessageContent = '';
 
-        for await (const event of client.streamChat(content)) {
+        for await (const event of client.streamChat({ message: content, quote })) {
           console.log('SSE event:', event.type, event.data);
           switch (event.type) {
             case 'message_start': {
@@ -192,10 +199,12 @@ export function useStream() {
 
         // Stream ended
         setState((s) => ({ ...s, isStreaming: false }));
+        return true;
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
           // Aborted - not an error
           setState((s) => ({ ...s, isStreaming: false }));
+          return false;
         } else {
           const error = err instanceof Error ? err.message : 'Stream failed';
           setState((s) => ({
@@ -203,6 +212,7 @@ export function useStream() {
             isStreaming: false,
             error,
           }));
+          return false;
         }
       }
     },

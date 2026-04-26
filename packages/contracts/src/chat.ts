@@ -1,3 +1,14 @@
+export type ReplyQuote = {
+  text: string
+  sourceMessageId?: string
+  sourceRole?: 'user' | 'assistant'
+}
+
+export type ChatStreamRequest = {
+  message?: string
+  quote?: ReplyQuote
+}
+
 export type StreamToolUseEvent = {
   type: 'tool_use'
   data: { id: string; name: string; input: Record<string, unknown> }

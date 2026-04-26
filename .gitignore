@@ -45,3 +45,4 @@ data
 !.codex/prompts/**
 teach-me
 credentials.json
+fixtures/*

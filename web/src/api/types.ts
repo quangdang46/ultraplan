@@ -1,5 +1,6 @@
 // API types for Ultraplan backend
 import type {
+  ChatStreamRequest,
   CommandSuggestion,
   CommandSuggestionsResponse,
   ComposerSuggestionType,
@@ -7,6 +8,7 @@ import type {
   ExecuteCommandResponse,
   FileSuggestion,
   FileSuggestionsResponse,
+  ReplyQuote,
   ServerEvent,
 } from '../../../packages/contracts/src/index.ts';
 
@@ -51,14 +53,14 @@ export interface StateResponse {
     outputTokens: number;
   };
   cwd: string;
+  gitBranch?: string | null;
   connected: boolean;
 }
 
-export interface ChatRequest {
-  message: string;
-}
+export type ChatRequest = ChatStreamRequest;
 
 export type {
+  ChatStreamRequest,
   ComposerSuggestionType,
   FileSuggestion,
   CommandSuggestion,
@@ -66,6 +68,7 @@ export type {
   CommandSuggestionsResponse,
   ExecuteCommandRequest,
   ExecuteCommandResponse,
+  ReplyQuote,
 };
 
 export interface ApiError {

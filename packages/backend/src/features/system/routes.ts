@@ -1,4 +1,32 @@
 import { createJsonResponse } from '../../shared/http'
+import { execFileSync } from 'child_process'
+import { existsSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
+
+function findRepoRoot(startDir: string): string | null {
+  let current = startDir
+  while (true) {
+    if (existsSync(join(current, '.git'))) return current
+    const parent = dirname(current)
+    if (parent === current) return null
+    current = parent
+  }
+}
+
+function getGitBranch(cwd: string): string | null {
+  try {
+    const output = execFileSync('git', ['branch', '--show-current'], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    })
+      .trim()
+    return output || null
+  } catch {
+    return null
+  }
+}
 
 export async function handleSystemRoute(req: Request, path: string): Promise<Response | null> {
   if (req.method === 'GET' && path === '/health') {
@@ -21,13 +49,16 @@ export async function handleSystemRoute(req: Request, path: string): Promise<Res
   }
 
   if (req.method === 'GET' && path === '/api/state') {
+    const fileDir = dirname(fileURLToPath(import.meta.url))
+    const repoRoot = findRepoRoot(fileDir) ?? findRepoRoot(process.cwd()) ?? process.cwd()
     return createJsonResponse({
       permissionMode: 'per-tool',
       approvedTools: [],
       pendingTools: [],
       model: 'claude-3-5-sonnet-20241022',
       tokenUsage: { inputTokens: 0, outputTokens: 0 },
-      cwd: process.cwd(),
+      cwd: repoRoot,
+      gitBranch: getGitBranch(repoRoot),
       connected: true,
     })
   }

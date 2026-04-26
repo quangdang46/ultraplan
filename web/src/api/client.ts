@@ -7,7 +7,9 @@ import type {
   ExecuteCommandRequest,
   ExecuteCommandResponse,
   FileSuggestionsResponse,
+  ChatStreamRequest,
   ServerEvent,
+  ReplyQuote,
   StateResponse,
   ToolsResponse,
   SessionsResponse,
@@ -115,7 +117,7 @@ class ApiClient {
 
   // Chat endpoint (SSE streaming)
   async *streamChat(
-    message: string
+    request: ChatStreamRequest
   ): AsyncGenerator<ServerEvent> {
     if (!this.apiKey) {
       throw new Error('Not authenticated');
@@ -127,7 +129,7 @@ class ApiClient {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(request),
     });
 
     if (!response.ok) {
@@ -181,9 +183,9 @@ class ApiClient {
   }
 
   // Tool chat message (non-streaming convenience)
-  async sendMessage(message: string): Promise<void> {
+  async sendMessage(message: string, quote?: ReplyQuote): Promise<void> {
     // This is handled via streamChat - kept for compatibility
-    await this.streamChat(message);
+    await this.streamChat({ message, quote });
   }
 
   // Other endpoints

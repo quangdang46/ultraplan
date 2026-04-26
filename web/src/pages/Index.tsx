@@ -37,6 +37,10 @@ const Index = () => {
 		return () => mq.removeEventListener("change", sync);
 	}, []);
 
+	useEffect(() => {
+		setQuote(null);
+	}, [activeId]);
+
 	function handleSelectionAction(action: SelectionAction, text: string) {
 		if (action === "reply") {
 			setQuote(text);

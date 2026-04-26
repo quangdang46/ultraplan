@@ -1,9 +1,13 @@
+import type { ReplyQuote } from '../../api/types';
+
 export type ToolItem = {
   id: string;
   title: string;
   kind: string;
   status: 'done' | 'running' | 'failed';
   output?: string;
+  stderr?: string;
+  cwdWarning?: string;
   outputLines?: string[];
   exitCode?: number;
   timeDisplay?: string;
@@ -15,6 +19,7 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   toolCalls: ToolItem[];
+  quote?: ReplyQuote;
 }
 
 export interface StreamState {

@@ -31,4 +31,5 @@ export const PUBLIC_API_PATHS = new Set([
   '/api/auth/validate',
   '/api/suggest/files',
   '/api/suggest/commands',
+  '/api/state',
 ])

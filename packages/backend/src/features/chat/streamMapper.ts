@@ -1,4 +1,4 @@
-import type { ServerEvent } from '../../../contracts/src/index'
+import type { ServerEvent } from '../../../../contracts/src/index'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null

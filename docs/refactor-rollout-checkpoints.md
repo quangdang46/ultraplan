@@ -43,9 +43,26 @@ This document tracks phased rollout checkpoints for the clean-code separation wo
 
 - Manual smoke:
   - normal chat prompt
+  - reply with quote (selection -> submit -> quoted context preserved)
+  - quote clear via `Esc` and close button
   - slash prompt (`/help`, dynamic skill command)
   - `@` mention in empty query and path mode
   - tool call message and result rendering
 - Contract snapshot:
   - SSE event types and required fields
+  - chat request payload (`message` required, optional `quote`)
   - suggest response fields (`items`, `isPartial`, `generation`, `capApplied`)
+
+## Phase D - Reply With Quote Transport
+
+- Scope:
+  - shared quote payload contract in chat request
+  - web submit path propagation (`ActionBar` -> `useStream` -> API client)
+  - backend route quote validation + query composition
+- Behavior gate:
+  - legacy `{ message }` payload still accepted
+  - quote payload validation returns explicit errors (`QUOTE_*`)
+  - `@` and `/` composer interactions unchanged
+- Rollback:
+  - disable quote payload submission in web and keep UI preview only
+  - ignore quote in backend composition while still accepting payload

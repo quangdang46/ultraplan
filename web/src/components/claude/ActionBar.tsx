@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, GitBranch, GitPullRequest, Terminal, ArrowRight, X, Pause, Folder, FileText, Command } from "lucide-react";
 import { useStreamContext } from "../../hooks/useStreamContext";
 import { getApiClient } from "../../api/client";
-import type { CommandSuggestion, FileSuggestion } from "../../api/types";
+import type { CommandSuggestion, FileSuggestion, ReplyQuote } from "../../api/types";
 import {
   escapeRegExp,
   extractTaggedFiles,
@@ -60,6 +60,7 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [suggestionsMeta, setSuggestionsMeta] = useState<{ isPartial?: boolean; capApplied?: boolean }>({});
+  const [gitBranch, setGitBranch] = useState<string>("");
   const inputRef = useRef<HTMLInputElement>(null);
   const requestSeqRef = useRef(0);
   const client = getApiClient();
@@ -67,6 +68,35 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
 
   const triggerState = useMemo(() => parseTriggerState(reply, cursorPos), [reply, cursorPos]);
   const taggedFiles = useMemo(() => extractTaggedFiles(reply), [reply]);
+
+  useEffect(() => {
+    if (!quote) return;
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      const end = el.value.length;
+      el.focus();
+      el.setSelectionRange(end, end);
+    });
+  }, [quote]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadState = async () => {
+      try {
+        const state = await client.getState();
+        if (cancelled) return;
+        setGitBranch(state.gitBranch?.trim() || "");
+      } catch {
+        if (cancelled) return;
+        setGitBranch("");
+      }
+    };
+    void loadState();
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
 
   useEffect(() => {
     if (!triggerState) {
@@ -176,12 +206,13 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
     return true;
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const text = reply.trim();
-    if (!text || isStreaming) return;
+    if ((!text && !quote) || isStreaming) return;
+    const quotePayload: ReplyQuote | undefined = quote ? { text: quote } : undefined;
 
     if (text.startsWith("/")) {
-      executeSlashCommand(text);
+      await executeSlashCommand(text);
       setReply("");
       setCursorPos(0);
       setSuggestions([]);
@@ -189,7 +220,10 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
       return;
     }
 
-    sendMessage(text);
+    const sent = await sendMessage(text, quotePayload);
+    if (sent && quote) {
+      onClearQuote();
+    }
     setReply("");
     setCursorPos(0);
     setSuggestions([]);
@@ -206,7 +240,7 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
       <div className="flex items-center gap-1.5 mb-[7px]">
         <div className="flex items-center gap-1 bg-warm-sand text-charcoal-warm text-[10.5px] font-mono-claude px-[9px] py-1 rounded-[7px] border border-border-warm flex-1 min-w-0 overflow-hidden">
           <GitBranch className="w-2.5 h-2.5 flex-shrink-0" />
-          <span className="truncate">claude/research-cloudflare-cac...</span>
+          <span className="truncate">{gitBranch || "\u00A0"}</span>
         </div>
 
         <DkBtn>
@@ -301,9 +335,14 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
                 return;
               }
             }
+            if (e.key === "Escape" && quote) {
+              e.preventDefault();
+              onClearQuote();
+              return;
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              handleSubmit();
+              void handleSubmit();
             }
           }}
           placeholder={isStreaming ? "Thinking..." : "Reply…"}
@@ -377,7 +416,7 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
           </div>
         )}
         <button
-          onClick={isStreaming ? handlePause : handleSubmit}
+          onClick={isStreaming ? handlePause : () => void handleSubmit()}
           className={`absolute right-[7px] top-1/2 -translate-y-1/2 w-[25px] h-[25px] rounded-md text-white flex items-center justify-center transition-colors ${
             isStreaming
               ? "bg-amber-500 hover:bg-amber-600"

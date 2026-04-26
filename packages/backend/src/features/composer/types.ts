@@ -1,4 +1,8 @@
-import type { CommandSuggestion, FileSuggestion, FileSuggestionsResponse } from '../../../contracts/src/index'
+import type {
+  CommandSuggestion,
+  FileSuggestion,
+  FileSuggestionsResponse,
+} from '../../../../contracts/src/index'
 
 export type { CommandSuggestion, FileSuggestion }
 

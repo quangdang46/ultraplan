@@ -101,21 +101,21 @@ export const ConversationToolItem = ({ item }: ConversationToolItemProps) => {
         <div className="ml-3 space-y-2 rounded-[11px] border border-border-warm bg-white/75 px-3.5 py-2.5">
           {/* stdout */}
           {item.output && (
-            <div className="font-mono text-[11.5px] leading-[1.55] text-dark-warm whitespace-pre-wrap">
+            <div className="font-mono text-[11.5px] leading-[1.55] text-dark-warm whitespace-pre-wrap break-words [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_code]:whitespace-pre-wrap [&_code]:break-words">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.output}</ReactMarkdown>
             </div>
           )}
 
           {/* stderr (red) */}
           {item.stderr && (
-            <div className="font-mono text-[11.5px] leading-[1.55] text-coral whitespace-pre-wrap">
+            <div className="font-mono text-[11.5px] leading-[1.55] text-coral whitespace-pre-wrap break-words">
               {item.stderr}
             </div>
           )}
 
           {/* CWD warning (amber) */}
           {item.cwdWarning && (
-            <div className="font-mono text-[11.5px] leading-[1.55] text-amber-600">
+            <div className="font-mono text-[11.5px] leading-[1.55] text-amber-600 break-words">
               {item.cwdWarning}
             </div>
           )}
