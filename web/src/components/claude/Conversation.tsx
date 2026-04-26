@@ -1,15 +1,8 @@
-import { useState } from 'react';
 import { useStreamContext } from '../../hooks/useStreamContext';
 import { ConversationToolItem } from './ConversationToolItem';
 
 export function Conversation() {
-  const [quote, setQuote] = useState<string | null>(null);
-  const { messages, isStreaming, error: streamError, cancelStream, clearMessages } = useStreamContext();
-
-  const handleCancel = () => {
-    cancelStream();
-    clearMessages();
-  };
+  const { messages, isStreaming, error: streamError } = useStreamContext();
 
   return (
     <div className="flex flex-col h-full">
@@ -64,18 +57,6 @@ export function Conversation() {
           </div>
         )}
       </div>
-
-      {/* Cancel button */}
-      {isStreaming ? (
-        <div className="p-4 border-t border-border-warm">
-          <button
-            onClick={handleCancel}
-            className="w-full px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600"
-          >
-            Cancel
-          </button>
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowUp, GitBranch, GitPullRequest, Terminal, ArrowRight, X } from "lucide-react";
+import { ArrowUp, GitBranch, GitPullRequest, Terminal, ArrowRight, X, Pause } from "lucide-react";
 import { useStreamContext } from "../../hooks/useStreamContext";
 
 type Props = {
@@ -9,13 +9,17 @@ type Props = {
 
 export const ActionBar = ({ quote, onClearQuote }: Props) => {
   const [reply, setReply] = useState("");
-  const { sendMessage, isStreaming } = useStreamContext();
+  const { sendMessage, cancelStream, isStreaming } = useStreamContext();
 
   const handleSubmit = () => {
     if (reply.trim() && sendMessage && !isStreaming) {
       sendMessage(reply.trim());
       setReply("");
     }
+  };
+
+  const handlePause = () => {
+    cancelStream();
   };
 
   return (
@@ -64,17 +68,26 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
           value={reply}
           onChange={(e) => setReply(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
-          placeholder="Reply…"
-          className={`w-full bg-white border border-border-warm px-3 py-2 pr-11 text-[12.5px] text-olive-gray font-sans outline-none focus:border-terracotta/50 focus:shadow-[0_0_0_1.5px_hsl(var(--terracotta)/0.15)] transition-all placeholder:text-stone-gray ${
+          placeholder={isStreaming ? "Thinking..." : "Reply…"}
+          disabled={isStreaming}
+          className={`w-full bg-white border border-border-warm px-3 py-2 pr-11 text-[12.5px] text-olive-gray font-sans outline-none focus:border-terracotta/50 focus:shadow-[0_0_0_1.5px_hsl(var(--terracotta)/0.15)] transition-all placeholder:text-stone-gray disabled:bg-warm-sand/30 disabled:cursor-not-allowed ${
             quote ? "rounded-t-none rounded-b-[10px] border-t-transparent" : "rounded-[10px]"
           }`}
         />
         <button
-          onClick={handleSubmit}
-          className="absolute right-[7px] top-1/2 -translate-y-1/2 w-[25px] h-[25px] bg-terracotta hover:bg-coral rounded-md text-white flex items-center justify-center transition-colors"
-          aria-label="Send reply"
+          onClick={isStreaming ? handlePause : handleSubmit}
+          className={`absolute right-[7px] top-1/2 -translate-y-1/2 w-[25px] h-[25px] rounded-md text-white flex items-center justify-center transition-colors ${
+            isStreaming
+              ? "bg-amber-500 hover:bg-amber-600"
+              : "bg-terracotta hover:bg-coral"
+          }`}
+          aria-label={isStreaming ? "Pause" : "Send reply"}
         >
-          <ArrowUp className="w-3 h-3" />
+          {isStreaming ? (
+            <Pause className="w-3 h-3" />
+          ) : (
+            <ArrowUp className="w-3 h-3" />
+          )}
         </button>
       </div>
     </div>

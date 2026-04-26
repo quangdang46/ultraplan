@@ -48,8 +48,8 @@ export function createServer(options: ServerOptions = {}) {
         return new Response(null, { headers: HEADER_CORS });
       }
 
-      // Auth check for /api/* routes
-      if (path.startsWith('/api/') && path !== '/api/auth/init' && path !== '/api/auth/verify') {
+      // Auth check for /api/* routes (except init/verify/validate which handle their own auth)
+      if (path.startsWith('/api/') && path !== '/api/auth/init' && path !== '/api/auth/verify' && path !== '/api/auth/validate') {
         if (!validateApiKey(req.headers.get('Authorization'))) {
           return createJsonResponse({ success: false, error: 'UNAUTHORIZED' }, 401);
         }

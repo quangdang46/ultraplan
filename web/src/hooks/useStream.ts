@@ -29,6 +29,7 @@ export function useStream() {
   const client = getApiClient();
 
   const ensureAuthenticated = useCallback(async (): Promise<void> => {
+    // If we have a key, validate it - server-side map might have been reset
     if (client.hasApiKey()) {
       try {
         await client.authValidate();
@@ -37,6 +38,7 @@ export function useStream() {
         client.clearApiKey();
       }
     }
+    // No valid key - do full auth flow
     const { tempToken } = await client.authInit();
     await client.authVerify(tempToken);
   }, [client]);
@@ -83,7 +85,8 @@ export function useStream() {
       try {
         let currentMessageContent = '';
 
-        await client.streamChat(content, (event: ServerEvent) => {
+        for await (const event of client.streamChat(content)) {
+          console.log('SSE event:', event.type, event.data);
           switch (event.type) {
             case 'message_start': {
               // Message started - could track ID
@@ -188,7 +191,7 @@ export function useStream() {
               break;
             }
           }
-        });
+        }
 
         // Stream ended
         setState((s) => ({ ...s, isStreaming: false }));

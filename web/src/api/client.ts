@@ -95,8 +95,7 @@ class ApiClient {
 
   // Chat endpoint (SSE streaming)
   async *streamChat(
-    message: string,
-    onEvent: (event: ServerEvent) => void
+    message: string
   ): AsyncGenerator<ServerEvent> {
     if (!this.apiKey) {
       throw new Error('Not authenticated');
@@ -145,13 +144,10 @@ class ApiClient {
 
             try {
               const parsed = JSON.parse(dataStr);
-              // Build event with type from SSE event: field
-              // Format from backend: event: <type>\ndata: {"type":"...",...}
               const event: ServerEvent = {
                 type: (currentEventType || parsed.type) as ServerEvent['type'],
                 data: parsed.data ?? parsed,
               };
-              onEvent(event);
               yield event;
             } catch {
               // Skip invalid JSON
