@@ -2,6 +2,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useStreamContext } from '../../hooks/useStreamContext';
 import { ConversationToolItem } from './ConversationToolItem';
+import { ThinkingIndicator } from './ThinkingIndicator';
 
 export function Conversation() {
   const { messages, isStreaming, error: streamError } = useStreamContext();
@@ -17,21 +18,32 @@ export function Conversation() {
         )}
 
         {messages.map((msg) => (
-            <div key={msg.id} className="bg-warm-sand text-dark-surface rounded-lg p-3 w-full prose prose-sm prose-stone max-w-none">
+          <div
+            key={msg.id}
+            className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+          >
+            <div className={`space-y-2 w-full ${msg.role === 'user' ? 'max-w-[85%]' : 'max-w-[92%]'}`}>
+              {msg.role === 'assistant' &&
+                msg.toolCalls.map((tool) => (
+                  <ConversationToolItem key={tool.id} item={tool} />
+                ))}
+
               {msg.content ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                <div
+                  className={`rounded-lg p-3 prose prose-sm max-w-none ${
+                    msg.role === 'user'
+                      ? 'bg-terracotta text-white prose-invert'
+                      : 'bg-warm-sand text-dark-surface prose-stone'
+                  }`}
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                </div>
               ) : isStreaming && msg.role === 'assistant' ? (
-                <span className="text-charcoal-warm animate-pulse">Thinking...</span>
+                <ThinkingIndicator />
               ) : null}
             </div>
+          </div>
         ))}
-
-        {/* Tool calls as separate bubbles below messages */}
-        {messages.flatMap((msg) =>
-          msg.toolCalls.map((tool) => (
-            <ConversationToolItem key={tool.id} item={tool} />
-          ))
-        )}
 
         {streamError && (
           <div className="text-red-500 text-center p-2 bg-red-50 rounded w-full">

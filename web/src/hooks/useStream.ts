@@ -17,6 +17,39 @@ export interface Message {
   toolCalls: ToolItem[];
 }
 
+function toToolResultText(raw: unknown): string {
+  if (typeof raw === 'string') return raw;
+  if (!raw) return '';
+
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (
+          item &&
+          typeof item === 'object' &&
+          'text' in item &&
+          typeof (item as { text?: unknown }).text === 'string'
+        ) {
+          return (item as { text: string }).text;
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  if (typeof raw === 'object') {
+    const maybeContent = raw as { content?: unknown; text?: unknown };
+    if (typeof maybeContent.text === 'string') return maybeContent.text;
+    if (maybeContent.content !== undefined) {
+      return toToolResultText(maybeContent.content);
+    }
+  }
+
+  return String(raw);
+}
+
 export function useStream() {
   const [state, setState] = useState<StreamState>({
     isStreaming: false,
@@ -145,21 +178,37 @@ export function useStream() {
             case 'tool_result': {
               // Tool completed
               console.log('tool_result event:', event.data);
-              const resultData = event.data;
+              const resultData = event.data as Record<string, unknown>;
+              const toolCallId = String(
+                resultData.toolCallId ?? resultData.tool_use_id ?? resultData.id ?? ''
+              );
+              const resultText = toToolResultText(
+                resultData.result ?? resultData.content
+              );
+              const exitCode =
+                typeof resultData.exitCode === 'number'
+                  ? resultData.exitCode
+                  : resultData.is_error
+                    ? 1
+                    : 0;
+              const timeDisplay =
+                typeof resultData.timeDisplay === 'string'
+                  ? resultData.timeDisplay
+                  : '';
 
               setState((s) => {
                 const newTools = new Map(s.activeTools);
-                const existingTool = newTools.get(resultData.toolCallId);
+                const existingTool = newTools.get(toolCallId);
 
                 if (existingTool) {
-                  newTools.set(resultData.toolCallId, {
+                  newTools.set(toolCallId, {
                     ...existingTool,
-                    status: resultData.exitCode === 0 ? 'done' : 'failed',
-                    output: resultData.result,
-                    exitCode: resultData.exitCode,
-                    timeDisplay: resultData.timeDisplay,
+                    status: exitCode === 0 ? 'done' : 'failed',
+                    output: resultText,
+                    exitCode,
+                    timeDisplay,
                     elapsedMs: existingTool.elapsedMs,
-                    outputLines: resultData.result?.split('\n').slice(-5) || [],
+                    outputLines: resultText ? resultText.split('\n').slice(-5) : [],
                   });
                 }
 
@@ -169,11 +218,14 @@ export function useStream() {
                   messages[messages.length - 1] = {
                     ...lastMsg,
                     toolCalls: lastMsg.toolCalls.map((tc) =>
-                      tc.id === resultData.toolCallId
+                      tc.id === toolCallId
                         ? {
                             ...tc,
-                            status: resultData.exitCode === 0 ? 'done' : 'failed',
-                            output: resultData.result,
+                            status: exitCode === 0 ? 'done' : 'failed',
+                            output: resultText,
+                            exitCode,
+                            timeDisplay,
+                            outputLines: resultText ? resultText.split('\n').slice(-5) : [],
                           }
                         : tc
                     ),

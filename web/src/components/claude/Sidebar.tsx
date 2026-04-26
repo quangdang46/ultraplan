@@ -1,13 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, GitBranch, Hash, Settings, MessageSquare, Bell } from "lucide-react";
+import {
+  ArrowUp,
+  GitBranch,
+  Hash,
+  Settings,
+  MessageSquare,
+  Bell,
+  PanelLeftClose,
+  PanelLeftOpen,
+} from "lucide-react";
 import { sessions, type Session } from "@/data/claudeCode";
 
 type Props = {
   activeId: number;
   onSelect: (id: number) => void;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 };
 
-export const Sidebar = ({ activeId, onSelect }: Props) => {
+export const Sidebar = ({ activeId, onSelect, collapsed = false, onToggleCollapse }: Props) => {
   const [draft, setDraft] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -17,6 +28,26 @@ export const Sidebar = ({ activeId, onSelect }: Props) => {
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
   }, [draft]);
+
+  if (collapsed) {
+    return (
+      <aside className="h-full w-full bg-parchment border-r border-border-warm flex flex-col overflow-hidden items-center">
+        <div className="w-full px-2 pt-[13px] pb-[10px] border-b border-border-cream flex-shrink-0 flex flex-col items-center gap-2">
+          <button
+            onClick={onToggleCollapse}
+            aria-label="Expand sidebar"
+            title="Expand sidebar"
+            className="w-8 h-8 rounded-[7px] text-stone-gray hover:bg-warm-sand hover:text-near-black transition-colors flex items-center justify-center"
+          >
+            <PanelLeftOpen className="w-4 h-4" />
+          </button>
+          <span className="w-[21px] h-[21px] rounded-[5px] bg-near-black text-ivory font-serif-display text-[11px] flex items-center justify-center flex-shrink-0">
+            A
+          </span>
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside className="h-full w-full bg-parchment border-r border-border-warm flex flex-col overflow-hidden">
@@ -32,6 +63,14 @@ export const Sidebar = ({ activeId, onSelect }: Props) => {
           <span className="bg-warm-sand text-olive-gray text-[10.5px] px-[7px] py-[2px] rounded-[5px]">
             Research preview
           </span>
+          <button
+            onClick={onToggleCollapse}
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+            className="ml-auto w-7 h-7 rounded-[7px] text-stone-gray hover:bg-warm-sand hover:text-near-black transition-colors flex items-center justify-center"
+          >
+            <PanelLeftClose className="w-3.5 h-3.5" />
+          </button>
         </div>
 
         {/* Composer */}

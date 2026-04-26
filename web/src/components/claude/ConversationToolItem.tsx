@@ -27,6 +27,7 @@ export const ConversationToolItem = ({ item }: ConversationToolItemProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const isRunning = item.status === "running";
   const isFailed = item.status === "failed";
+  const hasDetails = Boolean(item.output || item.stderr || item.cwdWarning || item.timeDisplay);
 
   // Running state: "● Bash (command)" + "Running… (0:02)" + last 5 lines
   if (isRunning) {
@@ -96,7 +97,7 @@ export const ConversationToolItem = ({ item }: ConversationToolItemProps) => {
         </span>
       </button>
 
-      {isOpen && (
+      {isOpen && hasDetails && (
         <div className="ml-3 space-y-2 rounded-[11px] border border-border-warm bg-white/75 px-3.5 py-2.5">
           {/* stdout */}
           {item.output && (

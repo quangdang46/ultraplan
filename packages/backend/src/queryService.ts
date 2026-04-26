@@ -131,11 +131,13 @@ export async function streamQuery(options: StreamingOptions): Promise<void> {
 
       // Handle user messages containing tool_result content (from getCompletedResults)
       if (e.type === 'user') {
-        const userMsg = e as { message?: { content?: Array<{ type: string; text?: string; source?: string; tool_use_id?: string }> } }
+        const userMsg = e as { message?: { content?: Array<{ type: string; text?: string; source?: string; tool_use_id?: string; content?: Array<{ type: string; text?: string }> }> } }
         if (userMsg.message?.content) {
           for (const block of userMsg.message.content) {
             if (block.type === 'tool_result') {
-              const text = block.text || ''
+              // tool_result from user message has text in block.content[0].text
+              const content = block.content as Array<{ type: string; text?: string }> | undefined
+              const text = content?.find(c => c.type === 'text')?.text || ''
               const toolCallId = block.tool_use_id || ''
               onEvent({
                 type: 'tool_result',

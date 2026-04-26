@@ -22,6 +22,7 @@ const Index = () => {
 	const [renderToken, setRenderToken] = useState(0);
 	const [quote, setQuote] = useState<string | null>(null);
 	const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+	const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(false);
 	const desktopContentRef = useRef<HTMLDivElement>(null);
 	const mobileContentRef = useRef<HTMLDivElement>(null);
 	const [isMobile, setIsMobile] = useState(false);
@@ -54,63 +55,117 @@ const Index = () => {
 		<main className="w-full overflow-hidden shadow-window h-screen">
 			{/* Desktop */}
 			<div className="hidden md:block h-full">
-				<ResizablePanelGroup direction="horizontal" className="h-full bg-parchment">
-					<ResizablePanel defaultSize={24} minSize={16} maxSize={36}>
-						<Sidebar activeId={activeId} onSelect={setActiveId} />
-					</ResizablePanel>
-					<ResizableHandle withHandle className="bg-border-warm/70" />
-
-					<ResizablePanel defaultSize={76} minSize={64}>
-						<section className="flex h-full flex-col bg-ivory min-h-0">
-							<PanelTop
-								title={active.title}
-								diagramsOpen={diagramsOpen}
-								onToggleDiagrams={() => setDiagramsOpen((v) => !v)}
+				{desktopSidebarCollapsed ? (
+					<div className="h-full bg-parchment flex">
+						<div className="w-[64px] flex-shrink-0">
+							<Sidebar
+								activeId={activeId}
+								onSelect={setActiveId}
+								collapsed
+								onToggleCollapse={() => setDesktopSidebarCollapsed(false)}
 							/>
+						</div>
+						<div className="flex-1 min-w-0">
+							<section className="flex h-full flex-col bg-ivory min-h-0">
+								<PanelTop
+									title={active.title}
+									diagramsOpen={diagramsOpen}
+									onToggleDiagrams={() => setDiagramsOpen((v) => !v)}
+								/>
 
-							<div className="flex-1 min-h-0 w-full overflow-hidden">
-								<ResizablePanelGroup direction="horizontal">
-									<ResizablePanel
-										defaultSize={diagramsOpen ? 72 : 100}
-										minSize={45}
-									>
-										<StreamProvider>
-											<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
-												<div
-												ref={desktopContentRef}
-													className="flex-1 min-h-0 overflow-y-auto px-6 py-5 scrollbar-warm"
-												>
-													<Conversation />
+								<div className="flex-1 min-h-0 w-full overflow-hidden">
+									<ResizablePanelGroup direction="horizontal">
+										<ResizablePanel defaultSize={diagramsOpen ? 72 : 100} minSize={45}>
+											<StreamProvider>
+												<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
+													<div
+														ref={desktopContentRef}
+														className="flex-1 min-h-0 overflow-y-auto px-6 py-5 scrollbar-warm"
+													>
+														<Conversation />
+													</div>
+
+													<ActionBar
+														quote={quote}
+														onClearQuote={() => setQuote(null)}
+													/>
 												</div>
+											</StreamProvider>
+										</ResizablePanel>
 
-												<ActionBar
-													quote={quote}
-													onClearQuote={() => setQuote(null)}
-												/>
-											</div>
-										</StreamProvider>
-									</ResizablePanel>
+										{diagramsOpen && (
+											<>
+												<ResizableHandle withHandle className="bg-border-warm/70" />
+												<ResizablePanel defaultSize={28} minSize={20} maxSize={55}>
+													<MermaidPanel
+														onClose={() => setDiagramsOpen(false)}
+														renderToken={renderToken}
+													/>
+												</ResizablePanel>
+											</>
+										)}
+									</ResizablePanelGroup>
+								</div>
+							</section>
+						</div>
+					</div>
+				) : (
+					<ResizablePanelGroup direction="horizontal" className="h-full bg-parchment">
+						<ResizablePanel defaultSize={24} minSize={16} maxSize={36}>
+							<Sidebar
+								activeId={activeId}
+								onSelect={setActiveId}
+								collapsed={false}
+								onToggleCollapse={() => setDesktopSidebarCollapsed(true)}
+							/>
+						</ResizablePanel>
+						<ResizableHandle withHandle className="bg-border-warm/70" />
 
-									{diagramsOpen && (
-										<>
-											<ResizableHandle withHandle className="bg-border-warm/70" />
-											<ResizablePanel
-												defaultSize={28}
-												minSize={20}
-												maxSize={55}
-											>
-												<MermaidPanel
-													onClose={() => setDiagramsOpen(false)}
-													renderToken={renderToken}
-												/>
-											</ResizablePanel>
-										</>
-									)}
-								</ResizablePanelGroup>
-							</div>
-						</section>
-					</ResizablePanel>
-				</ResizablePanelGroup>
+						<ResizablePanel defaultSize={76} minSize={64}>
+							<section className="flex h-full flex-col bg-ivory min-h-0">
+								<PanelTop
+									title={active.title}
+									diagramsOpen={diagramsOpen}
+									onToggleDiagrams={() => setDiagramsOpen((v) => !v)}
+								/>
+
+								<div className="flex-1 min-h-0 w-full overflow-hidden">
+									<ResizablePanelGroup direction="horizontal">
+										<ResizablePanel defaultSize={diagramsOpen ? 72 : 100} minSize={45}>
+											<StreamProvider>
+												<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
+													<div
+														ref={desktopContentRef}
+														className="flex-1 min-h-0 overflow-y-auto px-6 py-5 scrollbar-warm"
+													>
+														<Conversation />
+													</div>
+
+													<ActionBar
+														quote={quote}
+														onClearQuote={() => setQuote(null)}
+													/>
+												</div>
+											</StreamProvider>
+										</ResizablePanel>
+
+										{diagramsOpen && (
+											<>
+												<ResizableHandle withHandle className="bg-border-warm/70" />
+												<ResizablePanel defaultSize={28} minSize={20} maxSize={55}>
+													<MermaidPanel
+														onClose={() => setDiagramsOpen(false)}
+														renderToken={renderToken}
+													/>
+												</ResizablePanel>
+											</>
+										)}
+									</ResizablePanelGroup>
+								</div>
+							</section>
+						</ResizablePanel>
+					</ResizablePanelGroup>
+				)}
 			</div>
 
 			{/* Mobile */}
