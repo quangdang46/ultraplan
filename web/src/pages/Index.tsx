@@ -4,6 +4,7 @@ import { PanelTop } from "@/components/claude/PanelTop";
 import { Conversation } from "@/components/claude/Conversation";
 import { MermaidPanel } from "@/components/claude/MermaidPanel";
 import { ActionBar } from "@/components/claude/ActionBar";
+import { StreamProvider } from "@/hooks/useStreamContext";
 import {
 	ResizableHandle,
 	ResizablePanel,
@@ -73,19 +74,21 @@ const Index = () => {
 										defaultSize={diagramsOpen ? 72 : 100}
 										minSize={45}
 									>
-										<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
-											<div
-											ref={desktopContentRef}
-												className="flex-1 min-h-0 overflow-y-auto px-6 py-5 scrollbar-warm"
-											>
-												<Conversation />
-											</div>
+										<StreamProvider>
+											<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
+												<div
+												ref={desktopContentRef}
+													className="flex-1 min-h-0 overflow-y-auto px-6 py-5 scrollbar-warm"
+												>
+													<Conversation />
+												</div>
 
-											<ActionBar
-												quote={quote}
-												onClearQuote={() => setQuote(null)}
-											/>
-										</div>
+												<ActionBar
+													quote={quote}
+													onClearQuote={() => setQuote(null)}
+												/>
+											</div>
+										</StreamProvider>
 									</ResizablePanel>
 
 									{diagramsOpen && (
@@ -119,18 +122,20 @@ const Index = () => {
 						onToggleDiagrams={() => setDiagramsOpen((v) => !v)}
 						onOpenSidebar={() => setMobileSidebarOpen(true)}
 					/>
-					<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
-						<div
-							ref={mobileContentRef}
-							className="flex-1 min-h-0 overflow-y-auto px-4 py-4 scrollbar-warm"
-						>
-							<Conversation />
+					<StreamProvider>
+						<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
+							<div
+								ref={mobileContentRef}
+								className="flex-1 min-h-0 overflow-y-auto px-4 py-4 scrollbar-warm"
+							>
+								<Conversation />
+							</div>
+							<ActionBar
+								quote={quote}
+								onClearQuote={() => setQuote(null)}
+							/>
 						</div>
-						<ActionBar
-							quote={quote}
-							onClearQuote={() => setQuote(null)}
-						/>
-					</div>
+					</StreamProvider>
 				</section>
 
 				{/* Mobile sidebar drawer */}

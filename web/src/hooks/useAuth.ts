@@ -78,6 +78,19 @@ export function useAuth() {
     }
   }, [client]);
 
+  const requireAuth = useCallback(async (): Promise<void> => {
+    if (state.isAuthenticated && client.hasApiKey()) {
+      try {
+        await client.authValidate();
+        return;
+      } catch {
+        client.clearApiKey();
+      }
+    }
+    const { tempToken } = await initAuth();
+    await verifyAuth(tempToken);
+  }, [client, state.isAuthenticated, initAuth, verifyAuth]);
+
   const logout = useCallback(() => {
     client.clearApiKey();
     setState({
@@ -99,6 +112,7 @@ export function useAuth() {
     initAuth,
     verifyAuth,
     validateAuth,
+    requireAuth,
     logout,
   };
 }

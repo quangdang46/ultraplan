@@ -1,18 +1,19 @@
 import { useState } from "react";
 import { ArrowUp, GitBranch, GitPullRequest, Terminal, ArrowRight, X } from "lucide-react";
+import { useStreamContext } from "../../hooks/useStreamContext";
 
 type Props = {
   quote: string | null;
   onClearQuote: () => void;
-  onSend?: (text: string) => void;
 };
 
-export const ActionBar = ({ quote, onClearQuote, onSend }: Props) => {
+export const ActionBar = ({ quote, onClearQuote }: Props) => {
   const [reply, setReply] = useState("");
+  const { sendMessage, isStreaming } = useStreamContext();
 
   const handleSubmit = () => {
-    if (reply.trim() && onSend) {
-      onSend(reply.trim());
+    if (reply.trim() && sendMessage && !isStreaming) {
+      sendMessage(reply.trim());
       setReply("");
     }
   };

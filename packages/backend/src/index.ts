@@ -86,7 +86,9 @@ export function createServer(options: ServerOptions = {}) {
 
         // GET /api/auth/validate
         if (req.method === 'GET' && path === '/api/auth/validate') {
-          return createJsonResponse({ valid: true });
+          const auth = req.headers.get('Authorization');
+          const valid = validateApiKey(auth);
+          return createJsonResponse({ valid });
         }
 
         // POST /api/chat/stream (SSE)

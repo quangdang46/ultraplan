@@ -1,55 +1,15 @@
 import { useState } from 'react';
-import { useAuth } from '../../hooks/useAuth';
-import { useStream } from '../../hooks/useStream';
-import { ActionBar } from './ActionBar';
+import { useStreamContext } from '../../hooks/useStreamContext';
 import { ConversationToolItem } from './ConversationToolItem';
 
 export function Conversation() {
   const [quote, setQuote] = useState<string | null>(null);
-  const { isAuthenticated, isLoading: authLoading, error: authError, initAuth, verifyAuth } = useAuth();
-  const { messages, isStreaming, error: streamError, sendMessage, cancelStream, clearMessages } = useStream();
-
-  const handleSend = async (text: string) => {
-    if (!text.trim() || isStreaming) return;
-
-    if (!isAuthenticated) {
-      try {
-        const { tempToken } = await initAuth();
-        await verifyAuth(tempToken);
-      } catch {
-        return;
-      }
-    }
-
-    await sendMessage(text);
-  };
+  const { messages, isStreaming, error: streamError, cancelStream, clearMessages } = useStreamContext();
 
   const handleCancel = () => {
     cancelStream();
     clearMessages();
   };
-
-  if (authLoading) {
-    return (
-      <div className="flex items-center justify-center p-8">
-        <div className="text-charcoal-warm">Authenticating...</div>
-      </div>
-    );
-  }
-
-  if (authError) {
-    return (
-      <div className="flex flex-col items-center justify-center p-8 gap-4">
-        <div className="text-red-500">Auth error: {authError}</div>
-        <button
-          onClick={() => initAuth()}
-          className="px-4 py-2 bg-blue-500 text-white rounded"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-col h-full">
@@ -105,7 +65,7 @@ export function Conversation() {
         )}
       </div>
 
-      {/* Input using ActionBar */}
+      {/* Cancel button */}
       {isStreaming ? (
         <div className="p-4 border-t border-border-warm">
           <button
@@ -115,12 +75,7 @@ export function Conversation() {
             Cancel
           </button>
         </div>
-      ) : (
-        <ActionBar
-          quote={quote}
-          onClearQuote={() => setQuote(null)}
-        />
-      )}
+      ) : null}
     </div>
   );
 }

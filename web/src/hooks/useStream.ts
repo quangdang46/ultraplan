@@ -28,6 +28,19 @@ export function useStream() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const client = getApiClient();
 
+  const ensureAuthenticated = useCallback(async (): Promise<void> => {
+    if (client.hasApiKey()) {
+      try {
+        await client.authValidate();
+        return;
+      } catch {
+        client.clearApiKey();
+      }
+    }
+    const { tempToken } = await client.authInit();
+    await client.authVerify(tempToken);
+  }, [client]);
+
   const sendMessage = useCallback(
     async (content: string): Promise<void> => {
       // Cancel any existing stream
@@ -36,6 +49,9 @@ export function useStream() {
       }
 
       abortControllerRef.current = new AbortController();
+
+      // Ensure authenticated before sending
+      await ensureAuthenticated();
 
       // Add user message
       const userMessageId = `user_${Date.now()}`;
@@ -190,7 +206,7 @@ export function useStream() {
         }
       }
     },
-    [client]
+    [client, ensureAuthenticated]
   );
 
   const cancelStream = useCallback(() => {
