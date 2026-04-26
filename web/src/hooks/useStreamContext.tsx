@@ -9,6 +9,7 @@ interface StreamContextValue {
   executeSlashCommand: ReturnType<typeof useStream>['executeSlashCommand'];
   cancelStream: ReturnType<typeof useStream>['cancelStream'];
   clearMessages: ReturnType<typeof useStream>['clearMessages'];
+  loadMessages: ReturnType<typeof useStream>['loadMessages'];
 }
 
 const StreamContext = createContext<StreamContextValue | null>(null);

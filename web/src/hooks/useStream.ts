@@ -21,7 +21,7 @@ export function useStream() {
   }, [client]);
 
   const sendMessage = useCallback(
-    async (content: string, quote?: ReplyQuote): Promise<boolean> => {
+    async (content: string, quote?: ReplyQuote, sessionId?: string): Promise<boolean> => {
       // Cancel any existing stream
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
@@ -68,7 +68,7 @@ export function useStream() {
       try {
         let currentMessageContent = '';
 
-        for await (const event of client.streamChat({ message: content, quote })) {
+        for await (const event of client.streamChat({ message: content, quote, sessionId })) {
           console.log('SSE event:', event.type, event.data);
           switch (event.type) {
             case 'message_start': {
@@ -240,11 +240,22 @@ export function useStream() {
     setState((s) => ({ ...s, messages: [], activeTools: new Map() }));
   }, []);
 
+  const loadMessages = useCallback((messages: Message[]) => {
+    setState((s) => ({
+      ...s,
+      messages,
+      activeTools: new Map(),
+      error: null,
+      isStreaming: false,
+    }));
+  }, []);
+
   return {
     ...state,
     sendMessage,
     executeSlashCommand,
     cancelStream,
     clearMessages,
+    loadMessages,
   };
 }

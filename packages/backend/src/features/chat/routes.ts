@@ -52,6 +52,7 @@ export async function handleChatRoute(req: Request, path: string): Promise<Respo
   }
 
   const message = typeof body.message === 'string' ? body.message.trim() : ''
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
 
   let quote: ReplyQuote | undefined
   try {
@@ -83,6 +84,7 @@ export async function handleChatRoute(req: Request, path: string): Promise<Respo
         await streamQuery({
           message: userMessage,
           quote,
+          sessionId: sessionId || undefined,
           onEvent: (event) => send(event.type, event),
         })
       } catch (error) {

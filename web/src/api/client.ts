@@ -14,6 +14,8 @@ import type {
   ToolsResponse,
   SessionsResponse,
   ApiError,
+  SessionMessage,
+  Session,
 } from './types';
 
 const DEFAULT_BASE_URL = 'http://localhost:8080';
@@ -183,9 +185,9 @@ class ApiClient {
   }
 
   // Tool chat message (non-streaming convenience)
-  async sendMessage(message: string, quote?: ReplyQuote): Promise<void> {
+  async sendMessage(message: string, quote?: ReplyQuote, sessionId?: string): Promise<void> {
     // This is handled via streamChat - kept for compatibility
-    await this.streamChat({ message, quote });
+    await this.streamChat({ message, quote, sessionId });
   }
 
   // Other endpoints
@@ -195,6 +197,38 @@ class ApiClient {
 
   async getSessions(): Promise<SessionsResponse> {
     return this.request<SessionsResponse>('/api/sessions');
+  }
+
+  async getSessionMessages(sessionId: string): Promise<SessionMessage[]> {
+    return this.request<{ messages: SessionMessage[] }>(
+      `/api/sessions/${sessionId}/messages`
+    ).then((r) => r.messages);
+  }
+
+  async getSession(sessionId: string): Promise<Session> {
+    return this.request<{ session: Session }>(
+      `/api/sessions/${sessionId}`
+    ).then((r) => r.session);
+  }
+
+  async createSession(cwd?: string): Promise<Session> {
+    return this.request<{ session: Session }>('/api/sessions', {
+      method: 'POST',
+      body: cwd ? JSON.stringify({ cwd }) : '{}',
+    }).then((r) => r.session);
+  }
+
+  async killSession(sessionId: string): Promise<void> {
+    await this.request<{ success: boolean }>(`/api/sessions/${sessionId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async renameSession(sessionId: string, name: string): Promise<void> {
+    await this.request<{ success: boolean }>(`/api/sessions/${sessionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    });
   }
 
   async getState(): Promise<StateResponse> {

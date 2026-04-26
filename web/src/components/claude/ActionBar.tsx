@@ -17,6 +17,7 @@ import {
 type Props = {
   quote: string | null;
   onClearQuote: () => void;
+  sessionId?: string | null;
 };
 
 type SuggestionViewItem = {
@@ -52,7 +53,7 @@ function HighlightMatch({ text, query }: { text: string; query: string }) {
   );
 }
 
-export const ActionBar = ({ quote, onClearQuote }: Props) => {
+export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
   const [reply, setReply] = useState("");
   const [cursorPos, setCursorPos] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -220,7 +221,7 @@ export const ActionBar = ({ quote, onClearQuote }: Props) => {
       return;
     }
 
-    const sent = await sendMessage(text, quotePayload);
+      const sent = await sendMessage(text, quotePayload, sessionId ?? undefined);
     if (sent && quote) {
       onClearQuote();
     }

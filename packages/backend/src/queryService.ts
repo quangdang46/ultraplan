@@ -9,7 +9,9 @@ import { getTools } from 'src/tools'
 import { getEmptyToolPermissionContext } from 'src/Tool'
 import { getCommands } from 'src/commands'
 import { getDefaultAppState } from 'src/state/AppStateStore'
+import { switchSession } from 'src/bootstrap/state'
 import type { ReplyQuote, ServerEvent } from '../../contracts/src/index'
+import type { SessionId } from 'src/types/ids'
 import type { Tools } from 'src/Tool'
 import type { Command } from 'src/commands'
 import { mapQueryEventToServerEvents } from './features/chat/streamMapper'
@@ -52,6 +54,7 @@ async function getMinimalCommands(): Promise<Command[]> {
 export interface StreamingOptions {
   message: string
   quote?: ReplyQuote
+  sessionId?: string
   onEvent: (event: ServerEvent) => void
   signal?: AbortSignal
 }
@@ -64,7 +67,7 @@ function composeUserMessage(message: string, quote?: ReplyQuote): string {
 }
 
 export async function streamQuery(options: StreamingOptions): Promise<void> {
-  const { message, quote, onEvent, signal } = options
+  const { message, quote, sessionId, onEvent, signal } = options
   const abortController = createAbortController()
 
   if (signal) {
@@ -73,6 +76,10 @@ export async function streamQuery(options: StreamingOptions): Promise<void> {
 
   try {
     await ensureRuntimeInit()
+
+    if (sessionId && sessionId.trim()) {
+      switchSession(sessionId as SessionId, null)
+    }
 
     // Get tools and commands
     const [tools, commands] = await Promise.all([

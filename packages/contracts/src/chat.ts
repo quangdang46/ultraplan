@@ -7,6 +7,7 @@ export type ReplyQuote = {
 export type ChatStreamRequest = {
   message?: string
   quote?: ReplyQuote
+  sessionId?: string
 }
 
 export type StreamToolUseEvent = {

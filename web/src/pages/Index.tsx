@@ -4,7 +4,7 @@ import { PanelTop } from "@/components/claude/PanelTop";
 import { Conversation } from "@/components/claude/Conversation";
 import { MermaidPanel } from "@/components/claude/MermaidPanel";
 import { ActionBar } from "@/components/claude/ActionBar";
-import { StreamProvider } from "@/hooks/useStreamContext";
+import { StreamProvider, useStreamContext } from "@/hooks/useStreamContext";
 import {
 	ResizableHandle,
 	ResizablePanel,
@@ -14,21 +14,33 @@ import {
 	SelectionTooltip,
 	type SelectionAction,
 } from "@/components/claude/SelectionTooltip";
-import { sessions } from "@/data/claudeCode";
+import type { Session } from "@/api/types";
+import { getApiClient } from "@/api/client";
+import type { Message } from "@/features/chat/types";
+import { ensureApiAuthenticated } from "@/features/chat/streamTransport";
+import { useSessions } from "@/hooks/useSessions";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 const Index = () => {
-	const [activeId, setActiveId] = useState(9);
 	const [diagramsOpen, setDiagramsOpen] = useState(false);
 	const [renderToken, setRenderToken] = useState(0);
 	const [quote, setQuote] = useState<string | null>(null);
 	const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 	const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(false);
+	const [activeSession, setActiveSession] = useState<Session | null>(null);
 	const desktopContentRef = useRef<HTMLDivElement>(null);
 	const mobileContentRef = useRef<HTMLDivElement>(null);
 	const [isMobile, setIsMobile] = useState(false);
+	const navigate = useNavigate();
+	const location = useLocation();
+	const { chatId } = useParams<{ chatId?: string }>();
+	const { sessions, loading, error, refetch, createSession, killSession, renameSession } = useSessions();
 
-	const active = sessions.find((s) => s.id === activeId)!;
-
+	useEffect(() => {
+		if (location.pathname === "/") {
+			navigate("/new", { replace: true });
+		}
+	}, [location.pathname, navigate]);
 	useEffect(() => {
 		const mq = window.matchMedia("(max-width: 767px)");
 		const sync = () => setIsMobile(mq.matches);
@@ -39,7 +51,16 @@ const Index = () => {
 
 	useEffect(() => {
 		setQuote(null);
-	}, [activeId]);
+	}, [activeSession?.id]);
+
+	useEffect(() => {
+		if (!chatId) {
+			setActiveSession(null);
+			return;
+		}
+		const found = sessions.find((s) => s.id === chatId) ?? null;
+		setActiveSession(found);
+	}, [chatId, sessions]);
 
 	function handleSelectionAction(action: SelectionAction, text: string) {
 		if (action === "reply") {
@@ -55,16 +76,29 @@ const Index = () => {
 		}
 	}
 
+	function handleSessionSelect(session: Session) {
+		setActiveSession(session);
+		navigate(`/chat/${session.id}`);
+	}
+
 	return (
 		<main className="w-full overflow-hidden shadow-window h-screen">
 			{/* Desktop */}
-			<div className="hidden md:block h-full">
+			{!isMobile && (
+			<div className="h-full">
 				{desktopSidebarCollapsed ? (
 					<div className="h-full bg-parchment flex">
 						<div className="w-[64px] flex-shrink-0">
 							<Sidebar
-								activeId={activeId}
-								onSelect={setActiveId}
+								activeId={activeSession?.id ?? null}
+								onSelect={handleSessionSelect}
+								sessions={sessions}
+								loading={loading}
+								error={error}
+								refetch={refetch}
+								createSession={createSession}
+								killSession={killSession}
+								renameSession={renameSession}
 								collapsed
 								onToggleCollapse={() => setDesktopSidebarCollapsed(false)}
 							/>
@@ -72,7 +106,7 @@ const Index = () => {
 						<div className="flex-1 min-w-0">
 							<section className="flex h-full flex-col bg-ivory min-h-0">
 								<PanelTop
-									title={active.title}
+									title={activeSession?.title ?? "Select a session"}
 									diagramsOpen={diagramsOpen}
 									onToggleDiagrams={() => setDiagramsOpen((v) => !v)}
 								/>
@@ -80,7 +114,8 @@ const Index = () => {
 								<div className="flex-1 min-h-0 w-full overflow-hidden">
 									<ResizablePanelGroup direction="horizontal">
 										<ResizablePanel defaultSize={diagramsOpen ? 72 : 100} minSize={45}>
-											<StreamProvider>
+											<StreamProvider key={activeSession?.id ?? 'none'}>
+												<SessionHistoryLoader sessionId={activeSession?.id ?? null} enabled={!isMobile} />
 												<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
 													<div
 														ref={desktopContentRef}
@@ -92,6 +127,7 @@ const Index = () => {
 													<ActionBar
 														quote={quote}
 														onClearQuote={() => setQuote(null)}
+														sessionId={activeSession?.id}
 													/>
 												</div>
 											</StreamProvider>
@@ -117,8 +153,15 @@ const Index = () => {
 					<ResizablePanelGroup direction="horizontal" className="h-full bg-parchment">
 						<ResizablePanel defaultSize={24} minSize={16} maxSize={36}>
 							<Sidebar
-								activeId={activeId}
-								onSelect={setActiveId}
+								activeId={activeSession?.id ?? null}
+								onSelect={handleSessionSelect}
+								sessions={sessions}
+								loading={loading}
+								error={error}
+								refetch={refetch}
+								createSession={createSession}
+								killSession={killSession}
+								renameSession={renameSession}
 								collapsed={false}
 								onToggleCollapse={() => setDesktopSidebarCollapsed(true)}
 							/>
@@ -128,7 +171,7 @@ const Index = () => {
 						<ResizablePanel defaultSize={76} minSize={64}>
 							<section className="flex h-full flex-col bg-ivory min-h-0">
 								<PanelTop
-									title={active.title}
+									title={activeSession?.title ?? "Select a session"}
 									diagramsOpen={diagramsOpen}
 									onToggleDiagrams={() => setDiagramsOpen((v) => !v)}
 								/>
@@ -136,7 +179,8 @@ const Index = () => {
 								<div className="flex-1 min-h-0 w-full overflow-hidden">
 									<ResizablePanelGroup direction="horizontal">
 										<ResizablePanel defaultSize={diagramsOpen ? 72 : 100} minSize={45}>
-											<StreamProvider>
+											<StreamProvider key={activeSession?.id ?? 'none'}>
+												<SessionHistoryLoader sessionId={activeSession?.id ?? null} enabled={!isMobile} />
 												<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
 													<div
 														ref={desktopContentRef}
@@ -148,6 +192,7 @@ const Index = () => {
 													<ActionBar
 														quote={quote}
 														onClearQuote={() => setQuote(null)}
+														sessionId={activeSession?.id}
 													/>
 												</div>
 											</StreamProvider>
@@ -171,17 +216,20 @@ const Index = () => {
 					</ResizablePanelGroup>
 				)}
 			</div>
+			)}
 
 			{/* Mobile */}
-			<div className="md:hidden h-full bg-ivory">
+			{isMobile && (
+			<div className="h-full bg-ivory">
 				<section className="flex h-full flex-col min-h-0">
 					<PanelTop
-						title={active.title}
+						title={activeSession?.title ?? "Select a session"}
 						diagramsOpen={diagramsOpen}
 						onToggleDiagrams={() => setDiagramsOpen((v) => !v)}
 						onOpenSidebar={() => setMobileSidebarOpen(true)}
 					/>
-					<StreamProvider>
+					<StreamProvider key={activeSession?.id ?? 'none'}>
+						<SessionHistoryLoader sessionId={activeSession?.id ?? null} enabled={isMobile} />
 						<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
 							<div
 								ref={mobileContentRef}
@@ -192,6 +240,7 @@ const Index = () => {
 							<ActionBar
 								quote={quote}
 								onClearQuote={() => setQuote(null)}
+								sessionId={activeSession?.id}
 							/>
 						</div>
 					</StreamProvider>
@@ -214,11 +263,18 @@ const Index = () => {
 						}`}
 					>
 						<Sidebar
-							activeId={activeId}
-							onSelect={(id) => {
-								setActiveId(id);
+							activeId={activeSession?.id ?? null}
+							onSelect={(session) => {
+								handleSessionSelect(session);
 								setMobileSidebarOpen(false);
 							}}
+							sessions={sessions}
+							loading={loading}
+							error={error}
+							refetch={refetch}
+							createSession={createSession}
+							killSession={killSession}
+							renameSession={renameSession}
 						/>
 					</div>
 				</div>
@@ -233,6 +289,7 @@ const Index = () => {
 					</div>
 				)}
 			</div>
+			)}
 
 			<SelectionTooltip
 				containerRef={isMobile ? mobileContentRef : desktopContentRef}
@@ -243,3 +300,47 @@ const Index = () => {
 };
 
 export default Index;
+
+function SessionHistoryLoader({ sessionId, enabled }: { sessionId: string | null; enabled: boolean }) {
+	const { loadMessages } = useStreamContext();
+
+	useEffect(() => {
+		let cancelled = false;
+		const client = getApiClient();
+		if (!enabled || !sessionId) {
+			loadMessages([]);
+			return;
+		}
+
+		void ensureApiAuthenticated(client)
+			.then(() => client.getSessionMessages(sessionId))
+			.then((msgs) => {
+				if (cancelled) return;
+				const converted: Message[] = msgs
+					.filter(
+						(
+							m,
+						): m is typeof m & {
+							role: "user" | "assistant";
+						} => m.role === "user" || m.role === "assistant",
+					)
+					.map((m) => ({
+						id: `history_${m.timestamp}_${Math.random().toString(36).slice(2)}`,
+						role: m.role,
+						content: m.content,
+						toolCalls: [],
+					}));
+				loadMessages(converted);
+			})
+			.catch((err) => {
+				// Keep existing history on transient/auth failure; avoid masking as empty.
+				if (!cancelled) console.error("Failed to load session history", err);
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, [sessionId, enabled, loadMessages]);
+
+	return null;
+}

@@ -2,6 +2,7 @@ import { handleAuthRoute, PUBLIC_API_PATHS } from '../features/auth/routes'
 import { validateApiKey } from '../features/auth/authStore'
 import { handleChatRoute } from '../features/chat/routes'
 import { handleComposerRoute } from '../features/composer/routes'
+import { handleSessionsRoute } from '../features/sessions/routes'
 import { handleSystemRoute } from '../features/system/routes'
 import { createJsonResponse } from '../shared/http'
 import { errorResponse } from '../shared/errors'
@@ -27,6 +28,9 @@ export async function routeRequest(req: Request): Promise<Response> {
 
   const composerRouteResponse = await handleComposerRoute(req, path, url)
   if (composerRouteResponse) return composerRouteResponse
+
+  const sessionsRouteResponse = await handleSessionsRoute(req, path)
+  if (sessionsRouteResponse) return sessionsRouteResponse
 
   const systemRouteResponse = await handleSystemRoute(req, path)
   if (systemRouteResponse) return systemRouteResponse

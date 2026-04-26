@@ -10,6 +10,8 @@ import type {
   FileSuggestionsResponse,
   ReplyQuote,
   ServerEvent,
+  Session,
+  SessionMessage,
 } from '../../../packages/contracts/src/index.ts';
 
 export interface AuthInitResponse {
@@ -39,8 +41,8 @@ export interface ToolsResponse {
 }
 
 export interface SessionsResponse {
-  sessions: unknown[];
-  hasMore: boolean;
+  sessions: Session[]
+  hasMore: boolean
 }
 
 export interface StateResponse {
@@ -69,6 +71,8 @@ export type {
   ExecuteCommandRequest,
   ExecuteCommandResponse,
   ReplyQuote,
+  Session,
+  SessionMessage,
 };
 
 export interface ApiError {
