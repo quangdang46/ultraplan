@@ -18,7 +18,11 @@ export function Conversation() {
 
         {messages.map((msg) => (
             <div key={msg.id} className="bg-warm-sand text-dark-surface rounded-lg p-3 w-full prose prose-sm prose-stone max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+              {msg.content ? (
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+              ) : isStreaming && msg.role === 'assistant' ? (
+                <span className="text-charcoal-warm animate-pulse">Thinking...</span>
+              ) : null}
             </div>
         ))}
 
@@ -27,15 +31,6 @@ export function Conversation() {
           msg.toolCalls.map((tool) => (
             <ConversationToolItem key={tool.id} item={tool} />
           ))
-        )}
-
-        {isStreaming && (
-          <div className="bg-warm-sand rounded-lg p-3">
-            <div className="flex items-center gap-2 text-charcoal-warm">
-              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-sm">Thinking...</span>
-            </div>
-          </div>
         )}
 
         {streamError && (
