@@ -1,22 +1,38 @@
 // src/server/sessionManager.ts
-// Session manager with process isolation - each session = 1 CLI subprocess
+// Session manager with logical-session ownership plus process-per-session runtime
 
 import type { ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import { createInterface } from 'readline'
-import { jsonParse } from '../utils/slowOperations.js'
-import { spawnSessionProcess } from './processStarter.js'
-import { registerSession, unregisterSession, listLiveSessions } from './sessionRegistry.js'
-import type { SessionHandle, SessionDoneStatus } from './types.js'
+import type {
+  Session,
+  SessionMessage,
+} from '../../packages/contracts/src/index.js'
 import type { SessionActivity } from '../bridge/types.js'
-import type { Session } from '../../packages/contracts/src/index.js'
+import { jsonParse } from '../utils/slowOperations.js'
 import { listSessionsImpl, type SessionInfo } from '../utils/listSessionsImpl.js'
+import {
+  loadTranscriptMessages,
+} from './sessionPersistence.js'
+import { spawnSessionProcess } from './processStarter.js'
+import {
+  registerSession,
+  unregisterSession,
+  listLiveSessions,
+} from './sessionRegistry.js'
+import type { SessionHandle, SessionDoneStatus } from './types.js'
 
-// Extend EventEmitter to support setMaxListeners
 class SafeEventEmitter extends EventEmitter {
   setMaxListeners(n: number): this {
     return super.setMaxListeners(n)
   }
+}
+
+type SessionRecord = {
+  session: Session
+  messages: SessionMessage[]
+  messagesLoaded: boolean
+  assistantDraft?: SessionMessage
 }
 
 const READY_TIMEOUT_MS = 250
@@ -24,6 +40,21 @@ const STDERR_LINE_LIMIT = 50
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function defaultTitle(sessionId: string): string {
+  return sessionId.slice(0, 8)
+}
+
+function toIsoFromEpochMs(value?: number): string | undefined {
+  if (!value || Number.isNaN(value)) return undefined
+  return new Date(value).toISOString()
+}
+
+function laterIso(a?: string, b?: string): string | undefined {
+  if (!a) return b
+  if (!b) return a
+  return a >= b ? a : b
 }
 
 function formatFailureMessage(
@@ -48,11 +79,6 @@ function formatFailureMessage(
   return `Claude CLI subprocess exited with code ${code ?? 'unknown'}`
 }
 
-function toIsoFromEpochMs(value?: number): string | undefined {
-  if (!value || Number.isNaN(value)) return undefined
-  return new Date(value).toISOString()
-}
-
 async function findSessionInfo(
   sessionId: string,
 ): Promise<SessionInfo | undefined> {
@@ -60,30 +86,20 @@ async function findSessionInfo(
   return sessionInfos.find((info) => info.sessionId === sessionId)
 }
 
-function sessionInfoToSession(
-  info: SessionInfo,
-  live?: {
-    sessionId: string
-    cwd: string
-    startedAt: number
-    name?: string
-  },
-): Session {
+function sessionInfoToSession(info: SessionInfo): Session {
   const createdAt =
     toIsoFromEpochMs(info.createdAt) ??
-    (live ? new Date(live.startedAt).toISOString() : new Date(info.lastModified).toISOString())
+    new Date(info.lastModified).toISOString()
 
   return {
     id: info.sessionId,
-    title: live?.name || info.customTitle || info.summary || info.sessionId.slice(0, 8),
-    description: info.cwd || live?.cwd || '',
-    status: live ? 'active' : 'archived',
-    cwd: info.cwd || live?.cwd,
+    title: info.customTitle || info.summary || defaultTitle(info.sessionId),
+    description: info.cwd || '',
+    status: 'archived',
+    cwd: info.cwd,
     branch: info.gitBranch,
     tag: info.tag,
-    lastMessageAt:
-      toIsoFromEpochMs(info.lastModified) ??
-      (live ? new Date(live.startedAt).toISOString() : createdAt),
+    lastMessageAt: new Date(info.lastModified).toISOString(),
     createdAt,
   }
 }
@@ -139,12 +155,11 @@ class SessionHandleImpl implements SessionHandle {
       })
     })
 
-    this._watchStdout()
-    this._watchStderr()
+    this.watchStdout()
+    this.watchStderr()
   }
 
-  // CRITICAL: Own stdout completely, emit events to subscribers
-  private _watchStdout(): void {
+  private watchStdout(): void {
     if (!this.child.stdout || this.stdoutWatcher) return
 
     const rl = createInterface({ input: this.child.stdout })
@@ -154,10 +169,7 @@ class SessionHandleImpl implements SessionHandle {
       try {
         const parsed = jsonParse(line)
         if (parsed && typeof parsed === 'object') {
-          // Emit to all subscribers
           this.eventEmitter.emit('event', parsed)
-
-          // Resolve waitForResult when 'result' type arrives
           if ((parsed as Record<string, unknown>).type === 'result') {
             this.eventEmitter.emit('result')
           }
@@ -172,7 +184,7 @@ class SessionHandleImpl implements SessionHandle {
     })
   }
 
-  private _watchStderr(): void {
+  private watchStderr(): void {
     if (!this.child.stderr || this.stderrWatcher) return
 
     const rl = createInterface({ input: this.child.stderr })
@@ -197,14 +209,12 @@ class SessionHandleImpl implements SessionHandle {
     }
   }
 
-  // Public: chat.ts subscribes here - NO direct stdout access
   subscribeEvents(cb: (event: unknown) => void): () => void {
     this.eventEmitter.on('event', cb)
     return () => this.eventEmitter.off('event', cb)
   }
 
-  // Internal: wait for 'result' event
-  private _waitForResult(): Promise<void> {
+  private waitForResult(): Promise<void> {
     return new Promise((resolve) => {
       this.eventEmitter.once('result', resolve)
     })
@@ -221,7 +231,6 @@ class SessionHandleImpl implements SessionHandle {
     ])
   }
 
-  // Write message and wait for result (serialized per session)
   async enqueueMessage(data: string): Promise<void> {
     const previous = this.messageChain
     const run = previous.then(async () => {
@@ -231,7 +240,7 @@ class SessionHandleImpl implements SessionHandle {
         )
       }
 
-      const waitForResult = this._waitForResult()
+      const waitForResult = this.waitForResult()
       this.writeStdin(data)
       const outcome = await Promise.race([
         waitForResult.then(() => 'result' as const),
@@ -271,7 +280,6 @@ class SessionHandleImpl implements SessionHandle {
     return []
   }
 
-  // Cleanup
   destroy(): void {
     if (this.stdoutWatcher) {
       this.stdoutWatcher.close()
@@ -287,10 +295,165 @@ class SessionHandleImpl implements SessionHandle {
 
 class SessionManagerClass {
   private sessions = new Map<string, SessionHandle>()
+  private records = new Map<string, SessionRecord>()
   private capacity = 8
 
   init(opts: { capacity?: number } = {}): void {
     this.capacity = opts.capacity ?? 8
+  }
+
+  private getOrCreateRecord(
+    sessionId: string,
+    patch: Partial<Session> = {},
+    options: {
+      messages?: SessionMessage[]
+      messagesLoaded?: boolean
+    } = {},
+  ): SessionRecord {
+    const existing = this.records.get(sessionId)
+    const nowIso = new Date().toISOString()
+
+    const baseSession: Session = existing?.session ?? {
+      id: sessionId,
+      title: defaultTitle(sessionId),
+      description: patch.cwd || '',
+      status: 'active',
+      cwd: patch.cwd,
+      createdAt: patch.createdAt ?? nowIso,
+      lastMessageAt: patch.lastMessageAt ?? patch.createdAt ?? nowIso,
+    }
+
+    const nextSession: Session = {
+      ...baseSession,
+      ...patch,
+      id: sessionId,
+      title: patch.title ?? baseSession.title,
+      description:
+        patch.description ??
+        patch.cwd ??
+        baseSession.description,
+      cwd: patch.cwd ?? baseSession.cwd,
+      createdAt: patch.createdAt ?? baseSession.createdAt,
+      lastMessageAt: patch.lastMessageAt ?? baseSession.lastMessageAt,
+      status: patch.status ?? baseSession.status,
+    }
+
+    const record: SessionRecord = {
+      session: nextSession,
+      messages: options.messages ?? existing?.messages ?? [],
+      messagesLoaded:
+        options.messagesLoaded ?? existing?.messagesLoaded ?? false,
+      assistantDraft: existing?.assistantDraft,
+    }
+
+    this.records.set(sessionId, record)
+    return record
+  }
+
+  private hydrateFromSessionInfo(info: SessionInfo): SessionRecord {
+    const current = this.records.get(info.sessionId)
+    const transcriptSession = sessionInfoToSession(info)
+
+    return this.getOrCreateRecord(
+      info.sessionId,
+      {
+        title:
+          current && current.session.title !== defaultTitle(info.sessionId)
+            ? current.session.title
+            : transcriptSession.title,
+        description: current?.session.description || transcriptSession.description,
+        cwd: current?.session.cwd || transcriptSession.cwd,
+        branch: info.gitBranch ?? current?.session.branch,
+        tag: info.tag ?? current?.session.tag,
+        createdAt: current?.session.createdAt || transcriptSession.createdAt,
+        lastMessageAt: laterIso(
+          current?.session.lastMessageAt,
+          transcriptSession.lastMessageAt,
+        ) ?? transcriptSession.lastMessageAt,
+        status: current?.session.status ?? 'archived',
+      },
+      {
+        messages: current?.messages,
+        messagesLoaded: current?.messagesLoaded,
+      },
+    )
+  }
+
+  private async ensureRecord(
+    sessionId: string,
+    cwd?: string,
+  ): Promise<SessionRecord | undefined> {
+    const existing = this.records.get(sessionId)
+    if (existing) return existing
+
+    const sessionInfo = await findSessionInfo(sessionId)
+    if (sessionInfo) return this.hydrateFromSessionInfo(sessionInfo)
+
+    if (!cwd) return undefined
+
+    return this.getOrCreateRecord(
+      sessionId,
+      {
+        cwd,
+        description: cwd,
+        status: 'active',
+      },
+      {
+        messages: [],
+        messagesLoaded: true,
+      },
+    )
+  }
+
+  private async ensureMessagesLoaded(record: SessionRecord): Promise<void> {
+    if (record.messagesLoaded) return
+
+    const messages = await loadTranscriptMessages(
+      record.session.id,
+      record.session.cwd,
+    )
+
+    record.messages = messages
+    record.messagesLoaded = true
+
+    const latestMessage = messages.at(-1)
+    if (latestMessage?.timestamp) {
+      record.session = {
+        ...record.session,
+        lastMessageAt: laterIso(record.session.lastMessageAt, latestMessage.timestamp),
+      }
+    }
+  }
+
+  async createLogicalSession(
+    cwd: string,
+    sessionId = crypto.randomUUID(),
+  ): Promise<Session> {
+    if (this.records.has(sessionId) || this.sessions.has(sessionId)) {
+      throw new Error(`Session ${sessionId} already exists`)
+    }
+    if (await findSessionInfo(sessionId)) {
+      throw new Error(`Session ${sessionId} already exists`)
+    }
+
+    const nowIso = new Date().toISOString()
+    const record = this.getOrCreateRecord(
+      sessionId,
+      {
+        title: defaultTitle(sessionId),
+        description: cwd,
+        status: 'active',
+        cwd,
+        createdAt: nowIso,
+        lastMessageAt: nowIso,
+      },
+      {
+        messages: [],
+        messagesLoaded: true,
+      },
+    )
+
+    return { ...record.session }
   }
 
   async createSession(
@@ -301,6 +464,14 @@ class SessionManagerClass {
     if (this.sessions.size >= this.capacity) {
       throw new Error(`Session capacity reached: ${this.capacity}`)
     }
+
+    const record = this.getOrCreateRecord(sessionId, {
+      title: opts.name || this.records.get(sessionId)?.session.title || defaultTitle(sessionId),
+      description: cwd,
+      status: 'active',
+      cwd,
+      lastMessageAt: this.records.get(sessionId)?.session.lastMessageAt ?? new Date().toISOString(),
+    })
 
     const child = spawnSessionProcess(sessionId, {
       cwd,
@@ -322,14 +493,28 @@ class SessionManagerClass {
       })
     } catch (error) {
       this.sessions.delete(sessionId)
+      record.session = { ...record.session, status: 'error' }
       handle.kill()
       handle.destroy()
       await unregisterSession(sessionId)
       throw error
     }
 
-    // Cleanup on exit
-    void handle.done.then(() => {
+    void handle.done.then((status) => {
+      const currentRecord = this.records.get(sessionId)
+      if (currentRecord) {
+        const nextStatus =
+          status === 'failed'
+            ? 'error'
+            : currentRecord.messagesLoaded && currentRecord.messages.length > 0
+              ? 'archived'
+              : 'active'
+        currentRecord.session = {
+          ...currentRecord.session,
+          status: nextStatus,
+        }
+      }
+
       this.sessions.delete(sessionId)
       void unregisterSession(sessionId)
       handle.destroy()
@@ -342,12 +527,173 @@ class SessionManagerClass {
     return this.sessions.get(sessionId)
   }
 
+  async getSessionInfo(sessionId: string): Promise<Session | undefined> {
+    const record = await this.ensureRecord(sessionId)
+    return record ? { ...record.session } : undefined
+  }
+
+  async getSessionMessages(sessionId: string): Promise<SessionMessage[]> {
+    const record = await this.ensureRecord(sessionId)
+    if (!record) return []
+
+    await this.ensureMessagesLoaded(record)
+    const messages = record.messages.map((message) => ({ ...message }))
+    if (record.assistantDraft?.content) {
+      messages.push({ ...record.assistantDraft })
+    }
+    return messages
+  }
+
+  async recordSessionMessage(
+    sessionId: string,
+    message: SessionMessage,
+    cwd?: string,
+  ): Promise<void> {
+    const record =
+      (await this.ensureRecord(sessionId, cwd)) ??
+      this.getOrCreateRecord(
+        sessionId,
+        {
+          cwd,
+          description: cwd || '',
+          status: 'active',
+          createdAt: message.timestamp,
+          lastMessageAt: message.timestamp,
+        },
+        {
+          messages: [],
+          messagesLoaded: true,
+        },
+      )
+
+    await this.ensureMessagesLoaded(record)
+    record.messages.push(message)
+    record.messagesLoaded = true
+    record.session = {
+      ...record.session,
+      status: 'active',
+      cwd: cwd ?? record.session.cwd,
+      description: cwd ?? record.session.description,
+      lastMessageAt: laterIso(record.session.lastMessageAt, message.timestamp),
+    }
+  }
+
+  async beginAssistantMessage(
+    sessionId: string,
+    cwd?: string,
+  ): Promise<void> {
+    const record =
+      (await this.ensureRecord(sessionId, cwd)) ??
+      this.getOrCreateRecord(
+        sessionId,
+        {
+          cwd,
+          description: cwd || '',
+          status: 'active',
+        },
+        {
+          messages: [],
+          messagesLoaded: true,
+        },
+      )
+
+    await this.ensureMessagesLoaded(record)
+    if (!record.assistantDraft) {
+      record.assistantDraft = {
+        role: 'assistant',
+        content: '',
+        timestamp: new Date().toISOString(),
+      }
+    }
+  }
+
+  async appendAssistantMessage(
+    sessionId: string,
+    content: string,
+    mode: 'append' | 'replace' = 'append',
+    cwd?: string,
+  ): Promise<void> {
+    const record = await this.ensureRecord(sessionId, cwd)
+    if (!record) return
+
+    await this.ensureMessagesLoaded(record)
+    if (!record.assistantDraft) {
+      record.assistantDraft = {
+        role: 'assistant',
+        content: '',
+        timestamp: new Date().toISOString(),
+      }
+    }
+
+    record.assistantDraft = {
+      ...record.assistantDraft,
+      content:
+        mode === 'replace'
+          ? content
+          : `${record.assistantDraft.content}${content}`,
+      timestamp: new Date().toISOString(),
+    }
+    record.session = {
+      ...record.session,
+      status: 'active',
+      lastMessageAt: laterIso(
+        record.session.lastMessageAt,
+        record.assistantDraft.timestamp,
+      ),
+    }
+  }
+
+  async finalizeAssistantMessage(
+    sessionId: string,
+    cwd?: string,
+  ): Promise<void> {
+    const record = await this.ensureRecord(sessionId, cwd)
+    if (!record?.assistantDraft) return
+
+    await this.ensureMessagesLoaded(record)
+    if (record.assistantDraft.content.trim()) {
+      record.messages.push({
+        ...record.assistantDraft,
+        content: record.assistantDraft.content.trim(),
+      })
+    }
+    record.assistantDraft = undefined
+  }
+
+  updateSessionName(sessionId: string, name: string): void {
+    const record = this.records.get(sessionId)
+    if (!record) return
+    record.session = {
+      ...record.session,
+      title: name,
+    }
+  }
+
   async killSession(sessionId: string): Promise<boolean> {
     const handle = this.sessions.get(sessionId)
-    if (!handle) return false
+    if (!handle) {
+      const record = this.records.get(sessionId)
+      if (!record) return false
+
+      if (record.messagesLoaded && record.messages.length === 0) {
+        this.records.delete(sessionId)
+      } else {
+        record.session = { ...record.session, status: 'archived' }
+      }
+      return true
+    }
 
     handle.kill()
     await handle.done
+
+    const record = this.records.get(sessionId)
+    if (record) {
+      if (record.messagesLoaded && record.messages.length === 0) {
+        this.records.delete(sessionId)
+      } else if (record.session.status !== 'error') {
+        record.session = { ...record.session, status: 'archived' }
+      }
+    }
 
     this.sessions.delete(sessionId)
     await unregisterSession(sessionId)
@@ -361,31 +707,36 @@ class SessionManagerClass {
 
   async listAllSessions(): Promise<Session[]> {
     const liveEntries = await listLiveSessions()
-    const liveById = new Map(liveEntries.map((entry) => [entry.sessionId, entry]))
     const sessionInfos = await listSessionsImpl().catch(() => [] as SessionInfo[])
-    const sessions = new Map<string, Session>()
 
     for (const info of sessionInfos) {
-      sessions.set(info.sessionId, sessionInfoToSession(info, liveById.get(info.sessionId)))
+      this.hydrateFromSessionInfo(info)
     }
 
     for (const entry of liveEntries) {
-      if (!sessions.has(entry.sessionId)) {
-        sessions.set(entry.sessionId, {
-          id: entry.sessionId,
-          title: entry.name || entry.sessionId.slice(0, 8),
-          description: entry.cwd,
-          status: 'active',
-          cwd: entry.cwd,
-          createdAt: new Date(entry.startedAt).toISOString(),
-          lastMessageAt: new Date(entry.startedAt).toISOString(),
-        })
-      }
+      this.getOrCreateRecord(entry.sessionId, {
+        title:
+          entry.name ||
+          this.records.get(entry.sessionId)?.session.title ||
+          defaultTitle(entry.sessionId),
+        description: entry.cwd,
+        status: 'active',
+        cwd: entry.cwd,
+        createdAt:
+          this.records.get(entry.sessionId)?.session.createdAt ||
+          new Date(entry.startedAt).toISOString(),
+        lastMessageAt: laterIso(
+          this.records.get(entry.sessionId)?.session.lastMessageAt,
+          new Date(entry.startedAt).toISOString(),
+        ) ?? new Date(entry.startedAt).toISOString(),
+      })
     }
 
-    return Array.from(sessions.values()).sort((a, b) =>
-      (b.lastMessageAt || b.createdAt).localeCompare(a.lastMessageAt || a.createdAt),
-    )
+    return Array.from(this.records.values())
+      .map((record) => ({ ...record.session }))
+      .sort((a, b) =>
+        (b.lastMessageAt || b.createdAt).localeCompare(a.lastMessageAt || a.createdAt),
+      )
   }
 
   async getOrCreate(sessionId: string, cwd?: string): Promise<SessionHandle> {
@@ -400,19 +751,22 @@ class SessionManagerClass {
       )
     }
 
+    const record = await this.ensureRecord(sessionId, cwd)
     const sessionInfo = await findSessionInfo(sessionId)
-    if (sessionInfo) {
-      return this.createSession(
-        sessionId,
-        sessionInfo.cwd || cwd || process.cwd(),
-        {
-          resume: true,
-          name: sessionInfo.customTitle,
-        },
-      )
-    }
+    const resolvedCwd =
+      cwd ||
+      record?.session.cwd ||
+      sessionInfo?.cwd ||
+      process.cwd()
 
-    return this.createSession(sessionId, cwd || process.cwd())
+    return this.createSession(
+      sessionId,
+      resolvedCwd,
+      {
+        resume: Boolean(sessionInfo),
+        name: record?.session.title,
+      },
+    )
   }
 
   async destroyAll(): Promise<void> {
@@ -426,13 +780,8 @@ class SessionManagerClass {
 
 export const sessionManager = new SessionManagerClass()
 
-// Export SessionManagerClass as ProcessSessionManager for new server code
 export { SessionManagerClass as ProcessSessionManager }
 
-// ---------------------------------------------------------------------------
-// Backward compatibility stub for existing claude server command (main.tsx)
-// This stub is used by the DIRECT_CONNECT feature's "claude server" command
-// ---------------------------------------------------------------------------
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const SessionManager: new (...args: any[]) => { destroyAll(): Promise<void>; [key: string]: any } =
   SessionManagerClass as unknown as new (...args: any[]) => {

@@ -84,6 +84,7 @@ export function useStream() {
   });
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const attachControllerRef = useRef<AbortController | null>(null);
   const client = getApiClient();
 
   const ensureAuthenticated = useCallback(async (): Promise<void> => {
@@ -93,13 +94,218 @@ export function useStream() {
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
+      attachControllerRef.current?.abort();
     };
+  }, []);
+
+  const applyEvent = useCallback((event: ServerEvent) => {
+    switch (event.type) {
+      case 'session_created': {
+        setState((s) => ({
+          ...s,
+          sessionId: event.data.sessionId,
+        }));
+        break;
+      }
+
+      case 'message_start': {
+        setState((s) => ({ ...s, isStreaming: true }));
+        break;
+      }
+
+      case 'content_delta': {
+        const textDelta = event.data.delta?.text || '';
+        setState((s) => {
+          const messages = [...s.messages];
+          const lastMsg = messages[messages.length - 1];
+          if (!lastMsg || lastMsg.role !== 'assistant') {
+            messages.push({
+              id: `assistant_stream_${Date.now()}`,
+              role: 'assistant',
+              content: textDelta,
+              toolCalls: [],
+            });
+          } else {
+            messages[messages.length - 1] = {
+              ...lastMsg,
+              content: `${lastMsg.content}${textDelta}`,
+            };
+          }
+          return { ...s, isStreaming: true, messages };
+        });
+        break;
+      }
+
+      case 'content_block': {
+        const text = extractBlockText(event);
+        if (!text) break;
+
+        setState((s) => {
+          const messages = [...s.messages];
+          const lastMsg = messages[messages.length - 1];
+          if (!lastMsg || lastMsg.role !== 'assistant') {
+            messages.push({
+              id: `assistant_block_${Date.now()}`,
+              role: 'assistant',
+              content: text,
+              toolCalls: [],
+            });
+          } else {
+            messages[messages.length - 1] = {
+              ...lastMsg,
+              content: text,
+            };
+          }
+          return { ...s, isStreaming: true, messages };
+        });
+        break;
+      }
+
+      case 'tool_start': {
+        const toolData = event.data;
+        const toolItem: ToolItem = {
+          id: toolData.id,
+          title: formatToolTitle(toolData.name, toolData.input),
+          kind: toolData.name,
+          status: 'running',
+          outputLines: [],
+        };
+
+        setState((s) => {
+          const newTools = new Map(s.activeTools);
+          newTools.set(toolData.id, toolItem);
+
+          const messages = [...s.messages];
+          const lastMsg = messages[messages.length - 1];
+          if (!lastMsg || lastMsg.role !== 'assistant') {
+            messages.push({
+              id: `assistant_tool_${Date.now()}`,
+              role: 'assistant',
+              content: '',
+              toolCalls: [toolItem],
+            });
+          } else {
+            messages[messages.length - 1] = {
+              ...lastMsg,
+              toolCalls: [...lastMsg.toolCalls, toolItem],
+            };
+          }
+
+          return { ...s, isStreaming: true, activeTools: newTools, messages };
+        });
+        break;
+      }
+
+      case 'tool_result': {
+        const resultData = event.data as Record<string, unknown>;
+        const toolCallId = String(
+          resultData.toolCallId ?? resultData.tool_use_id ?? resultData.id ?? ''
+        );
+        const resultText = toToolResultText(
+          resultData.result ?? resultData.content
+        );
+        const exitCode =
+          typeof resultData.exitCode === 'number'
+            ? resultData.exitCode
+            : resultData.is_error
+              ? 1
+              : 0;
+        const timeDisplay =
+          typeof resultData.timeDisplay === 'string'
+            ? resultData.timeDisplay
+            : '';
+
+        setState((s) => {
+          const newTools = new Map(s.activeTools);
+          const existingTool = newTools.get(toolCallId);
+
+          if (existingTool) {
+            newTools.set(toolCallId, {
+              ...existingTool,
+              status: exitCode === 0 ? 'done' : 'failed',
+              output: resultText,
+              exitCode,
+              timeDisplay,
+              elapsedMs: existingTool.elapsedMs,
+              outputLines: resultText ? resultText.split('\n').slice(-5) : [],
+            });
+          }
+
+          const messages = [...s.messages];
+          const lastMsg = messages[messages.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant') {
+            messages[messages.length - 1] = {
+              ...lastMsg,
+              toolCalls: lastMsg.toolCalls.map((tc) =>
+                tc.id === toolCallId
+                  ? {
+                      ...tc,
+                      status: exitCode === 0 ? 'done' : 'failed',
+                      output: resultText,
+                      exitCode,
+                      timeDisplay,
+                      outputLines: resultText ? resultText.split('\n').slice(-5) : [],
+                    }
+                  : tc
+              ),
+            };
+          }
+
+          return { ...s, activeTools: newTools, messages };
+        });
+        break;
+      }
+
+      case 'permission_request': {
+        const request = toPendingPermission(
+          event.data.request_id,
+          event.data.request,
+        );
+        setState((s) => ({
+          ...s,
+          pendingPermissions: [
+            ...s.pendingPermissions.filter(
+              (item) => item.requestId !== request.requestId,
+            ),
+            request,
+          ],
+        }));
+        break;
+      }
+
+      case 'control_response': {
+        setState((s) => ({
+          ...s,
+          pendingPermissions: s.pendingPermissions.filter(
+            (item) => item.requestId !== event.data.request_id,
+          ),
+        }));
+        break;
+      }
+
+      case 'message_end': {
+        setState((s) => ({ ...s, isStreaming: false }));
+        break;
+      }
+
+      case 'error': {
+        setState((s) => ({
+          ...s,
+          isStreaming: false,
+          error: event.data.message,
+        }));
+        break;
+      }
+    }
   }, []);
 
   const sendMessage = useCallback(
     async (content: string, quote?: ReplyQuote, sessionId?: string): Promise<boolean> => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
+      }
+      if (attachControllerRef.current) {
+        attachControllerRef.current.abort();
       }
 
       abortControllerRef.current = new AbortController();
@@ -131,191 +337,11 @@ export function useStream() {
       }));
 
       try {
-        let currentMessageContent = '';
-
         for await (const event of client.streamChat(
           { message: content, quote, sessionId },
           { signal: abortControllerRef.current.signal }
         )) {
-          switch (event.type) {
-            case 'session_created': {
-              setState((s) => ({
-                ...s,
-                sessionId: event.data.sessionId,
-              }));
-              break;
-            }
-
-            case 'message_start': {
-              break;
-            }
-
-            case 'content_delta': {
-              const textDelta = event.data.delta?.text || '';
-              currentMessageContent += textDelta;
-
-              setState((s) => {
-                const messages = [...s.messages];
-                const lastMsg = messages[messages.length - 1];
-                if (lastMsg && lastMsg.role === 'assistant') {
-                  messages[messages.length - 1] = {
-                    ...lastMsg,
-                    content: currentMessageContent,
-                  };
-                }
-                return { ...s, messages };
-              });
-              break;
-            }
-
-            case 'content_block': {
-              const text = extractBlockText(event);
-              if (text) {
-                currentMessageContent = text;
-                setState((s) => {
-                  const messages = [...s.messages];
-                  const lastMsg = messages[messages.length - 1];
-                  if (lastMsg && lastMsg.role === 'assistant') {
-                    messages[messages.length - 1] = {
-                      ...lastMsg,
-                      content: text,
-                    };
-                  }
-                  return { ...s, messages };
-                });
-              }
-              break;
-            }
-
-            case 'tool_start': {
-              const toolData = event.data;
-              const toolItem: ToolItem = {
-                id: toolData.id,
-                title: formatToolTitle(toolData.name, toolData.input),
-                kind: toolData.name,
-                status: 'running',
-                outputLines: [],
-              };
-
-              setState((s) => {
-                const newTools = new Map(s.activeTools);
-                newTools.set(toolData.id, toolItem);
-
-                const messages = [...s.messages];
-                const lastMsg = messages[messages.length - 1];
-                if (lastMsg && lastMsg.role === 'assistant') {
-                  messages[messages.length - 1] = {
-                    ...lastMsg,
-                    toolCalls: [...lastMsg.toolCalls, toolItem],
-                  };
-                }
-
-                return { ...s, activeTools: newTools, messages };
-              });
-              break;
-            }
-
-            case 'tool_result': {
-              const resultData = event.data as Record<string, unknown>;
-              const toolCallId = String(
-                resultData.toolCallId ?? resultData.tool_use_id ?? resultData.id ?? ''
-              );
-              const resultText = toToolResultText(
-                resultData.result ?? resultData.content
-              );
-              const exitCode =
-                typeof resultData.exitCode === 'number'
-                  ? resultData.exitCode
-                  : resultData.is_error
-                    ? 1
-                    : 0;
-              const timeDisplay =
-                typeof resultData.timeDisplay === 'string'
-                  ? resultData.timeDisplay
-                  : '';
-
-              setState((s) => {
-                const newTools = new Map(s.activeTools);
-                const existingTool = newTools.get(toolCallId);
-
-                if (existingTool) {
-                  newTools.set(toolCallId, {
-                    ...existingTool,
-                    status: exitCode === 0 ? 'done' : 'failed',
-                    output: resultText,
-                    exitCode,
-                    timeDisplay,
-                    elapsedMs: existingTool.elapsedMs,
-                    outputLines: resultText ? resultText.split('\n').slice(-5) : [],
-                  });
-                }
-
-                const messages = [...s.messages];
-                const lastMsg = messages[messages.length - 1];
-                if (lastMsg && lastMsg.role === 'assistant') {
-                  messages[messages.length - 1] = {
-                    ...lastMsg,
-                    toolCalls: lastMsg.toolCalls.map((tc) =>
-                      tc.id === toolCallId
-                        ? {
-                            ...tc,
-                            status: exitCode === 0 ? 'done' : 'failed',
-                            output: resultText,
-                            exitCode,
-                            timeDisplay,
-                            outputLines: resultText ? resultText.split('\n').slice(-5) : [],
-                          }
-                        : tc
-                    ),
-                  };
-                }
-
-                return { ...s, activeTools: newTools, messages };
-              });
-              break;
-            }
-
-            case 'permission_request': {
-              const request = toPendingPermission(
-                event.data.request_id,
-                event.data.request,
-              );
-              setState((s) => ({
-                ...s,
-                pendingPermissions: [
-                  ...s.pendingPermissions.filter(
-                    (item) => item.requestId !== request.requestId,
-                  ),
-                  request,
-                ],
-              }));
-              break;
-            }
-
-            case 'control_response': {
-              setState((s) => ({
-                ...s,
-                pendingPermissions: s.pendingPermissions.filter(
-                  (item) => item.requestId !== event.data.request_id,
-                ),
-              }));
-              break;
-            }
-
-            case 'message_end': {
-              setState((s) => ({ ...s, isStreaming: false }));
-              break;
-            }
-
-            case 'error': {
-              setState((s) => ({
-                ...s,
-                isStreaming: false,
-                error: event.data.message,
-              }));
-              break;
-            }
-          }
+          applyEvent(event);
         }
 
         setState((s) => ({ ...s, isStreaming: false }));
@@ -335,7 +361,35 @@ export function useStream() {
         }
       }
     },
-    [client, ensureAuthenticated]
+    [applyEvent, client, ensureAuthenticated]
+  );
+
+  const attachSession = useCallback(
+    async (sessionId: string): Promise<void> => {
+      if (!sessionId) return;
+
+      if (attachControllerRef.current) {
+        attachControllerRef.current.abort();
+      }
+
+      attachControllerRef.current = new AbortController();
+      await ensureAuthenticated();
+
+      try {
+        for await (const event of client.streamSessionEvents(
+          sessionId,
+          { signal: attachControllerRef.current.signal },
+        )) {
+          applyEvent(event);
+        }
+      } catch (err) {
+        if (err instanceof Error) {
+          if (err.name === 'AbortError') return;
+          if (err.message === 'SESSION_NOT_ACTIVE') return;
+        }
+      }
+    },
+    [applyEvent, client, ensureAuthenticated]
   );
 
   const respondToPermission = useCallback(
@@ -377,6 +431,10 @@ export function useStream() {
     }
   }, []);
 
+  const detachSession = useCallback(() => {
+    attachControllerRef.current?.abort();
+  }, []);
+
   const clearMessages = useCallback(() => {
     setState((s) => ({
       ...s,
@@ -402,6 +460,8 @@ export function useStream() {
     ...state,
     sendMessage,
     respondToPermission,
+    attachSession,
+    detachSession,
     executeSlashCommand,
     cancelStream,
     clearMessages,

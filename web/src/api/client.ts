@@ -187,6 +187,75 @@ class ApiClient {
     }
   }
 
+  async *streamSessionEvents(
+    sessionId: string,
+    options: { signal?: AbortSignal } = {},
+  ): AsyncGenerator<ServerEvent> {
+    if (!this.apiKey) {
+      throw new Error('Not authenticated');
+    }
+
+    const response = await fetch(
+      `${this.baseUrl}/api/sessions/${sessionId}/stream`,
+      {
+        method: 'GET',
+        signal: options.signal,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+      },
+    );
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || 'Session stream request failed');
+    }
+
+    if (!response.body) {
+      throw new Error('No response body');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEventType = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEventType = line.slice(7).trim();
+            continue;
+          }
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6).trim();
+            if (!dataStr) continue;
+
+            try {
+              const parsed = JSON.parse(dataStr);
+              const event: ServerEvent = {
+                type: (currentEventType || parsed.type) as ServerEvent['type'],
+                data: parsed.data ?? parsed,
+              };
+              yield event;
+            } catch {
+              // Skip invalid JSON
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   // Tool chat message (non-streaming convenience)
   async sendMessage(message: string, quote?: ReplyQuote, sessionId?: string): Promise<void> {
     // This is handled via streamChat - kept for compatibility

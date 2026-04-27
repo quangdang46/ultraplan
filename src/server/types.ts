@@ -3,6 +3,10 @@
 
 import type { ChildProcess } from 'child_process'
 import { z } from 'zod/v4'
+import type {
+  Session,
+  SessionMessage,
+} from '../../packages/contracts/src/index.js'
 import { lazySchema } from '../utils/lazySchema.js'
 import type { SessionActivity } from '../bridge/types.js'
 
@@ -91,6 +95,27 @@ export type SessionDoneStatus = 'completed' | 'failed' | 'interrupted'
 export interface SessionManagerLike {
   getOrCreate(sessionId: string, cwd?: string): Promise<SessionHandle>
   getSession?(sessionId: string): SessionHandle | undefined
+  recordSessionMessage?(
+    sessionId: string,
+    message: SessionMessage,
+    cwd?: string,
+  ): Promise<void>
+  getSessionInfo?(sessionId: string): Promise<Session | undefined>
+  getSessionMessages?(sessionId: string): Promise<SessionMessage[]>
+  beginAssistantMessage?(
+    sessionId: string,
+    cwd?: string,
+  ): Promise<void>
+  appendAssistantMessage?(
+    sessionId: string,
+    content: string,
+    mode?: 'append' | 'replace',
+    cwd?: string,
+  ): Promise<void>
+  finalizeAssistantMessage?(
+    sessionId: string,
+    cwd?: string,
+  ): Promise<void>
 }
 
 export interface SpawnOptions {

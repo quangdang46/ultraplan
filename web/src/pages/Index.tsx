@@ -115,7 +115,7 @@ const Index = () => {
 									<ResizablePanelGroup direction="horizontal">
 										<ResizablePanel defaultSize={diagramsOpen ? 72 : 100} minSize={45}>
 											<StreamProvider key={activeSession?.id ?? 'none'}>
-												<SessionHistoryLoader sessionId={activeSession?.id ?? null} enabled={!isMobile} />
+												<SessionRuntimeLoader sessionId={activeSession?.id ?? null} enabled={!isMobile} />
 												<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
 													<div
 														ref={desktopContentRef}
@@ -180,7 +180,7 @@ const Index = () => {
 									<ResizablePanelGroup direction="horizontal">
 										<ResizablePanel defaultSize={diagramsOpen ? 72 : 100} minSize={45}>
 											<StreamProvider key={activeSession?.id ?? 'none'}>
-												<SessionHistoryLoader sessionId={activeSession?.id ?? null} enabled={!isMobile} />
+												<SessionRuntimeLoader sessionId={activeSession?.id ?? null} enabled={!isMobile} />
 												<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
 													<div
 														ref={desktopContentRef}
@@ -229,7 +229,7 @@ const Index = () => {
 						onOpenSidebar={() => setMobileSidebarOpen(true)}
 					/>
 					<StreamProvider key={activeSession?.id ?? 'none'}>
-						<SessionHistoryLoader sessionId={activeSession?.id ?? null} enabled={isMobile} />
+						<SessionRuntimeLoader sessionId={activeSession?.id ?? null} enabled={isMobile} />
 						<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
 							<div
 								ref={mobileContentRef}
@@ -301,21 +301,24 @@ const Index = () => {
 
 export default Index;
 
-function SessionHistoryLoader({ sessionId, enabled }: { sessionId: string | null; enabled: boolean }) {
-	const { loadMessages } = useStreamContext();
+function SessionRuntimeLoader({ sessionId, enabled }: { sessionId: string | null; enabled: boolean }) {
+	const { attachSession, detachSession, loadMessages } = useStreamContext();
 
 	useEffect(() => {
 		let cancelled = false;
 		const client = getApiClient();
 		if (!enabled || !sessionId) {
+			detachSession();
 			loadMessages([]);
 			return;
 		}
 
-		void ensureApiAuthenticated(client)
-			.then(() => client.getSessionMessages(sessionId))
-			.then((msgs) => {
+		const hydrateAndAttach = async () => {
+			try {
+				await ensureApiAuthenticated(client);
+				const msgs = await client.getSessionMessages(sessionId);
 				if (cancelled) return;
+
 				const converted: Message[] = msgs
 					.filter(
 						(
@@ -324,23 +327,30 @@ function SessionHistoryLoader({ sessionId, enabled }: { sessionId: string | null
 							role: "user" | "assistant";
 						} => m.role === "user" || m.role === "assistant",
 					)
-					.map((m) => ({
-						id: `history_${m.timestamp}_${Math.random().toString(36).slice(2)}`,
+					.map((m, index) => ({
+						id: `history_${m.timestamp}_${index}`,
 						role: m.role,
 						content: m.content,
 						toolCalls: [],
 					}));
 				loadMessages(converted);
-			})
-			.catch((err) => {
-				// Keep existing history on transient/auth failure; avoid masking as empty.
-				if (!cancelled) console.error("Failed to load session history", err);
-			});
+			} catch (err) {
+				if (!cancelled) {
+					console.error("Failed to load session history", err);
+				}
+			}
+
+			if (cancelled) return;
+			void attachSession(sessionId);
+		};
+
+		void hydrateAndAttach();
 
 		return () => {
 			cancelled = true;
+			detachSession();
 		};
-	}, [sessionId, enabled, loadMessages]);
+	}, [sessionId, enabled, attachSession, detachSession, loadMessages]);
 
 	return null;
 }

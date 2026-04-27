@@ -70,6 +70,14 @@ async function handleRequest(req: Request, allowedOrigin: string): Promise<Respo
       response = await authRoutes(req, path, allowedOrigin)
     }
     // Session routes
+    else if (
+      path.match(/^\/api\/sessions\/([^/]+)\/stream$/) &&
+      req.method === 'GET'
+    ) {
+      const { chatRoutes } = await import('./routes/chat.js')
+      response = await chatRoutes(req, allowedOrigin, undefined, path)
+    }
+    // Session routes
     else if (path.startsWith('/api/sessions')) {
       const { sessionRoutes } = await import('./routes/sessions.js')
       response = await sessionRoutes(req, path, allowedOrigin)

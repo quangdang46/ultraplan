@@ -14,14 +14,7 @@ export function useSessions() {
     try {
       await ensureApiAuthenticated(client)
       const resp = await client.getSessions()
-      // Deduplicate: server response may include sessions already in local state
-      // (e.g. from optimistic createSession). Use a Map to dedupe by ID.
-      setSessions((prev) => {
-        const byId = new Map<string, Session>()
-        for (const s of prev) byId.set(s.id, s)
-        for (const s of resp.sessions) byId.set(s.id, s)
-        return Array.from(byId.values())
-      })
+      setSessions(resp.sessions)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load sessions')
@@ -59,10 +52,10 @@ export function useSessions() {
     async (cwd?: string): Promise<Session> => {
       await ensureApiAuthenticated(client)
       const session = await client.createSession(cwd)
-      // Optimistically add to sessions list so the effect in Index.tsx that syncs
-      // activeSession from sessions finds the new session immediately (before refetch
-      // would overwrite with a server response that doesn't include it yet).
-      setSessions((prev) => [...prev, session])
+      setSessions((prev) => {
+        const next = prev.filter((item) => item.id !== session.id)
+        return [session, ...next]
+      })
       return session
     },
     [client]

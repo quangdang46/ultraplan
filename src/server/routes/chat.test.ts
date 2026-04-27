@@ -85,6 +85,13 @@ describe('mapSubprocessEventToServerEvents', () => {
 describe('chatRoutes', () => {
   test('subscribes before enqueueing so synchronous child output reaches SSE', async () => {
     let capturedPayload = ''
+    const recordedMessages: Array<{
+      sessionId: string
+      role: string
+      content: string
+      cwd?: string
+    }> = []
+    let assistantDraft = ''
     const subscribers = new Set<(event: unknown) => void>()
     const done = Promise.resolve('completed' as SessionDoneStatus)
 
@@ -131,6 +138,29 @@ describe('chatRoutes', () => {
       async getOrCreate() {
         return handle
       },
+      async recordSessionMessage(sessionId, message, cwd) {
+        recordedMessages.push({
+          sessionId,
+          role: message.role,
+          content: message.content,
+          cwd,
+        })
+      },
+      async beginAssistantMessage() {
+        assistantDraft = ''
+      },
+      async appendAssistantMessage(_sessionId, content, mode = 'append') {
+        assistantDraft =
+          mode === 'replace' ? content : `${assistantDraft}${content}`
+      },
+      async finalizeAssistantMessage(sessionId, cwd) {
+        recordedMessages.push({
+          sessionId,
+          role: 'assistant',
+          content: assistantDraft,
+          cwd,
+        })
+      },
     }
 
     const request = new Request('http://localhost/api/chat/stream', {
@@ -161,6 +191,20 @@ describe('chatRoutes', () => {
     expect(parsedPayload.session_id).toBe(handle.sessionId)
     expect(parsedPayload.message.content[0]?.text).toContain('Quoted context:')
     expect(parsedPayload.message.content[0]?.text).toContain('> Original context')
+    expect(recordedMessages).toEqual([
+      {
+        sessionId: handle.sessionId,
+        role: 'user',
+        content: expect.stringContaining('Quoted context:'),
+        cwd: '/repo',
+      },
+      {
+        sessionId: handle.sessionId,
+        role: 'assistant',
+        content: 'hello back',
+        cwd: '/repo',
+      },
+    ])
   })
 
   test('accepts control responses for active sessions', async () => {

@@ -123,6 +123,32 @@ describe('ProcessSessionManager', () => {
     await manager.destroyAll()
   })
 
+  test('creates logical sessions before attaching a CLI runtime', async () => {
+    const manager = new ProcessSessionManager()
+    manager.init({ capacity: 2 })
+
+    const session = await manager.createLogicalSession('/repo')
+
+    expect(spawnCalls).toHaveLength(0)
+    expect(session.cwd).toBe('/repo')
+    expect(session.status).toBe('active')
+    expect(await manager.getSessionMessages(session.id)).toEqual([])
+
+    const handle = await manager.getOrCreate(session.id)
+
+    expect(handle.sessionId).toBe(session.id)
+    expect(spawnCalls).toHaveLength(1)
+    expect(spawnCalls[0]).toEqual({
+      sessionId: session.id,
+      opts: {
+        cwd: '/repo',
+        resume: false,
+      },
+    })
+
+    await manager.destroyAll()
+  })
+
   test('rejects sessions already active in another server process', async () => {
     const sessionId = '550e8400-e29b-41d4-a716-446655440001'
     liveSessions = [

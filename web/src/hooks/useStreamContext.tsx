@@ -9,6 +9,8 @@ interface StreamContextValue {
   pendingPermissions: ReturnType<typeof useStream>['pendingPermissions'];
   sendMessage: ReturnType<typeof useStream>['sendMessage'];
   respondToPermission: ReturnType<typeof useStream>['respondToPermission'];
+  attachSession: ReturnType<typeof useStream>['attachSession'];
+  detachSession: ReturnType<typeof useStream>['detachSession'];
   executeSlashCommand: ReturnType<typeof useStream>['executeSlashCommand'];
   cancelStream: ReturnType<typeof useStream>['cancelStream'];
   clearMessages: ReturnType<typeof useStream>['clearMessages'];

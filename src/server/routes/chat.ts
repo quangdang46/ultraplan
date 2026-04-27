@@ -339,6 +339,55 @@ export async function chatRoutes(
     return jsonResponse({ success: true })
   }
 
+  if (req.method === 'GET' && path.match(/^\/api\/sessions\/([^/]+)\/stream$/)) {
+    const sessionId = path.split('/')[3]
+    const handle = manager.getSession?.(sessionId)
+    if (!handle) {
+      return jsonResponse({ error: 'SESSION_NOT_ACTIVE' }, 404)
+    }
+
+    const stream = new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder()
+
+        const send = (event: ServerEvent) => {
+          const data = `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+          controller.enqueue(encoder.encode(data))
+        }
+
+        send({
+          type: 'session_created',
+          data: {
+            sessionId: handle.sessionId,
+            cwd: handle.cwd,
+            createdAt: new Date(handle.startedAt).toISOString(),
+          },
+        })
+
+        const unsubscribe = handle.subscribeEvents((parsed: unknown) => {
+          for (const event of mapSubprocessEventToServerEvents(
+            parsed as Record<string, unknown>,
+          )) {
+            send(event)
+          }
+        })
+
+        const close = () => {
+          unsubscribe()
+          try {
+            controller.close()
+          } catch {
+            // already closed
+          }
+        }
+
+        void handle.done.finally(close)
+      },
+    })
+
+    return createSseResponse(stream, allowedOrigin)
+  }
+
   if (req.method !== 'POST' || path !== '/api/chat/stream') {
     return jsonResponse({ error: 'NOT_FOUND' }, 404)
   }
@@ -383,12 +432,15 @@ export async function chatRoutes(
   })
 
   const messageId = `msg_${Date.now()}`
+  const userMessage = composeUserMessage(message, quote)
 
   const stream = new ReadableStream({
     start(controller) {
       const encoder = new TextEncoder()
       let finished = false
       let turnCompleted = false
+      let assistantText = ''
+      let assistantRecorded = false
 
       const send = (event: ServerEvent) => {
         if (finished) return
@@ -411,6 +463,40 @@ export async function chatRoutes(
         for (const event of mapSubprocessEventToServerEvents(
           parsed as Record<string, unknown>,
         )) {
+          if (event.type === 'content_delta') {
+            void manager.beginAssistantMessage?.(handle.sessionId, handle.cwd)
+            void manager.appendAssistantMessage?.(
+              handle.sessionId,
+              event.data.delta.text,
+              'append',
+              handle.cwd,
+            )
+            assistantText += event.data.delta.text
+          } else if (event.type === 'content_block') {
+            const blockText =
+              event.data.block.text ??
+              (typeof event.data.block.content === 'string'
+                ? event.data.block.content
+                : '')
+            if (blockText) {
+              void manager.beginAssistantMessage?.(handle.sessionId, handle.cwd)
+              void manager.appendAssistantMessage?.(
+                handle.sessionId,
+                blockText,
+                'replace',
+                handle.cwd,
+              )
+              assistantText = blockText
+            }
+          } else if (
+            event.type === 'message_end' &&
+            assistantText.trim() &&
+            !assistantRecorded
+          ) {
+            assistantRecorded = true
+            void manager.finalizeAssistantMessage?.(handle.sessionId, handle.cwd)
+          }
+
           if (event.type === 'message_end' || event.type === 'error') {
             turnCompleted = true
           }
@@ -431,9 +517,23 @@ export async function chatRoutes(
         data: { id: messageId },
       })
 
+      void manager.recordSessionMessage?.(
+        handle.sessionId,
+        {
+          role: 'user',
+          content: userMessage,
+          timestamp: new Date().toISOString(),
+        },
+        handle.cwd,
+      )
+
       void handle
         .enqueueMessage(payload)
         .then(() => {
+          if (assistantText.trim() && !assistantRecorded) {
+            assistantRecorded = true
+            void manager.finalizeAssistantMessage?.(handle.sessionId, handle.cwd)
+          }
           if (!turnCompleted) {
             send({
               type: 'message_end',
