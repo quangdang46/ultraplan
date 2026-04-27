@@ -71,9 +71,13 @@ export const Sidebar = ({
   }
 
   async function handleCreateSession() {
+    // createSession already optimistically adds the session to the list
     const session = await createSession()
     onSelect(session)
-    await refetch()
+    // Note: refetch() is intentionally omitted here. Calling refetch() after
+    // onSelect creates a race where refetch's server response (which doesn't yet
+    // include the newly created session) overwrites the optimistic update, causing
+    // activeSession to become null briefly and unmounting the StreamProvider.
   }
 
   if (collapsed) {

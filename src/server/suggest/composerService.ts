@@ -1,16 +1,13 @@
-import { basename, dirname, join } from 'node:path'
-import type {
-  CommandSuggestion,
-  FileSuggestion,
-  FileSuggestionsResponse,
-} from '../../contracts/src/index'
-import { getFileIndex } from './features/composer/providers/fileIndexProvider'
-import { suggestCommandsByQuery } from './features/composer/providers/commandProvider'
-import { executeSlashCommandByQuery } from './features/composer/providers/slashProvider'
-import { isPathLikeToken, pathModeSuggestions } from './features/composer/providers/pathProvider'
-import { scoreFile } from './features/composer/providers/rankingProvider'
-import { MAX_FILE_SUGGESTIONS, TOP_LEVEL_CAP, type SlashCommandResult, type SuggestFilesResult } from './features/composer/types'
+// src/server/suggest/composerService.ts
+// Main entry point for file/command suggestions
 
+import { basename, dirname, join } from 'node:path'
+import { getFileIndex } from './fileIndexProvider.js'
+import { suggestCommandsByQuery } from './commandProvider.js'
+import { isPathLikeToken, pathModeSuggestions } from './pathProvider.js'
+import { scoreFile } from './rankingProvider.js'
+import type { CommandSuggestion, FileSuggestion, SuggestFilesResult } from './types.js'
+import { MAX_FILE_SUGGESTIONS, TOP_LEVEL_CAP } from './types.js'
 
 function toFileSuggestion(path: string, score?: number): FileSuggestion {
   return {
@@ -56,6 +53,7 @@ export async function suggestFiles(query: string, rootDir: string): Promise<Sugg
   let items: FileSuggestion[]
   let capApplied = false
   let diagnostics: SuggestFilesResult['diagnostics'] | undefined
+
   if (isPathLikeToken(trimmedQuery)) {
     items = await pathModeSuggestions(trimmedQuery, rootDir)
   } else {
@@ -109,8 +107,3 @@ export async function suggestFiles(query: string, rootDir: string): Promise<Sugg
 export async function suggestCommands(query: string, rootDir: string): Promise<CommandSuggestion[]> {
   return suggestCommandsByQuery(query, rootDir)
 }
-
-export async function executeSlashCommand(input: string, rootDir: string): Promise<SlashCommandResult> {
-  return executeSlashCommandByQuery(input, rootDir)
-}
-

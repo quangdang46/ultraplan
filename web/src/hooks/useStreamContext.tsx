@@ -2,10 +2,13 @@ import { createContext, useContext, type ReactNode } from 'react';
 import { useStream } from '../hooks/useStream';
 
 interface StreamContextValue {
+  sessionId: ReturnType<typeof useStream>['sessionId'];
   messages: ReturnType<typeof useStream>['messages'];
   isStreaming: ReturnType<typeof useStream>['isStreaming'];
   error: ReturnType<typeof useStream>['error'];
+  pendingPermissions: ReturnType<typeof useStream>['pendingPermissions'];
   sendMessage: ReturnType<typeof useStream>['sendMessage'];
+  respondToPermission: ReturnType<typeof useStream>['respondToPermission'];
   executeSlashCommand: ReturnType<typeof useStream>['executeSlashCommand'];
   cancelStream: ReturnType<typeof useStream>['cancelStream'];
   clearMessages: ReturnType<typeof useStream>['clearMessages'];

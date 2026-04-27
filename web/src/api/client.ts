@@ -3,6 +3,7 @@ import type {
   AuthInitResponse,
   AuthVerifyResponse,
   AuthValidateResponse,
+  ChatControlRequest,
   CommandSuggestionsResponse,
   ExecuteCommandRequest,
   ExecuteCommandResponse,
@@ -119,7 +120,8 @@ class ApiClient {
 
   // Chat endpoint (SSE streaming)
   async *streamChat(
-    request: ChatStreamRequest
+    request: ChatStreamRequest,
+    options: { signal?: AbortSignal } = {}
   ): AsyncGenerator<ServerEvent> {
     if (!this.apiKey) {
       throw new Error('Not authenticated');
@@ -127,6 +129,7 @@ class ApiClient {
 
     const response = await fetch(`${this.baseUrl}/api/chat/stream`, {
       method: 'POST',
+      signal: options.signal,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
@@ -190,6 +193,13 @@ class ApiClient {
     await this.streamChat({ message, quote, sessionId });
   }
 
+  async respondToPermission(request: ChatControlRequest): Promise<void> {
+    await this.request<{ success: boolean }>('/api/chat/control', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
   // Other endpoints
   async getTools(): Promise<ToolsResponse> {
     return this.request<ToolsResponse>('/api/tools');
@@ -238,17 +248,22 @@ class ApiClient {
   async suggestFiles(query: string, cwd?: string): Promise<FileSuggestionsResponse> {
     const params = new URLSearchParams({ q: query });
     if (cwd) params.set('cwd', cwd);
-    return this.request<FileSuggestionsResponse>(
-      `/api/suggest/files?${params.toString()}`
-    );
+    const response = await this.request<
+      FileSuggestionsResponse | { suggestions: FileSuggestionsResponse }
+    >(`/api/suggest/files?${params.toString()}`);
+    return 'suggestions' in response ? response.suggestions : response;
   }
 
   async suggestCommands(query: string, cwd?: string): Promise<CommandSuggestionsResponse> {
     const params = new URLSearchParams({ q: query });
     if (cwd) params.set('cwd', cwd);
-    return this.request<CommandSuggestionsResponse>(
-      `/api/suggest/commands?${params.toString()}`
-    );
+    const response = await this.request<
+      CommandSuggestionsResponse | { suggestions: CommandSuggestionsResponse['items'] }
+    >(`/api/suggest/commands?${params.toString()}`);
+    if ('suggestions' in response) {
+      return { items: response.suggestions };
+    }
+    return response;
   }
 
   async executeCommand(command: string, cwd?: string): Promise<ExecuteCommandResponse> {

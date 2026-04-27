@@ -1,3 +1,6 @@
+// src/server/suggest/fileIndexProvider.ts
+// File index for workspace suggestions
+
 import { execFile } from 'node:child_process'
 import { readdir, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'

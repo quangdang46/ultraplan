@@ -1,6 +1,7 @@
 // API types for Ultraplan backend
 import type {
   ChatStreamRequest,
+  ChatControlRequest,
   CommandSuggestion,
   CommandSuggestionsResponse,
   ComposerSuggestionType,
@@ -63,6 +64,7 @@ export type ChatRequest = ChatStreamRequest;
 
 export type {
   ChatStreamRequest,
+  ChatControlRequest,
   ComposerSuggestionType,
   FileSuggestion,
   CommandSuggestion,

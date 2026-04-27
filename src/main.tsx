@@ -4005,6 +4005,50 @@ async function run(): Promise<CommanderCommand> {
 						logForDebugging(`[MCP] ${label} connect error: ${err}`),
 					);
 				};
+				const isBackendServerSession =
+					process.env.CLAUDE_CODE_ENVIRONMENT_KIND === "server";
+				const parsedServerMcpTimeoutMs = Number.parseInt(
+					process.env.CLAUDE_CODE_SERVER_MCP_STARTUP_TIMEOUT_MS ?? "",
+					10,
+				);
+				const serverMcpStartupTimeoutMs =
+					Number.isFinite(parsedServerMcpTimeoutMs) &&
+					parsedServerMcpTimeoutMs >= 0
+						? parsedServerMcpTimeoutMs
+						: 1_500;
+				const waitForMcpBatchMaybeBounded = async (
+					configs: Record<string, ScopedMcpServerConfig>,
+					label: string,
+				): Promise<void> => {
+					const connectPromise = connectMcpBatch(configs, label);
+					if (
+						!isBackendServerSession ||
+						serverMcpStartupTimeoutMs === 0 ||
+						Object.keys(configs).length === 0
+					) {
+						await connectPromise;
+						return;
+					}
+
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					const timedOut = await Promise.race([
+						connectPromise.then(() => false),
+						new Promise<boolean>((resolve) => {
+							timer = setTimeout(
+								(r) => r(true),
+								serverMcpStartupTimeoutMs,
+								resolve,
+							);
+						}),
+					]);
+
+					if (timer) clearTimeout(timer);
+					if (timedOut) {
+						logForDebugging(
+							`[MCP] ${label} not ready after ${serverMcpStartupTimeoutMs}ms in backend server session; continuing while connection finishes in background`,
+						);
+					}
+				};
 				// Await all MCP configs — print mode is often single-turn, so
 				// "late-connecting servers visible next turn" doesn't help. SDK init
 				// message and turn-1 tool list both need configured MCP tools present.
@@ -4014,7 +4058,10 @@ async function run(): Promise<CommanderCommand> {
 				// fetch was kicked off early (line ~2558) so only residual time blocks
 				// here. --bare skips claude.ai entirely for perf-sensitive scripts.
 				profileCheckpoint("before_connectMcp");
-				await connectMcpBatch(regularMcpConfigs, "regular");
+				await waitForMcpBatchMaybeBounded(
+					regularMcpConfigs,
+					"regular",
+				);
 				profileCheckpoint("after_connectMcp");
 				// Dedup: suppress plugin MCP servers that duplicate a claude.ai
 				// connector (connector wins), then connect claude.ai servers.
@@ -4023,7 +4070,9 @@ async function run(): Promise<CommanderCommand> {
 				// climbed to 76s. If fetch+connect doesn't finish in time, proceed;
 				// the promise keeps running and updates headlessStore in the
 				// background so turn 2+ still sees connectors.
-				const CLAUDE_AI_MCP_TIMEOUT_MS = 5_000;
+				const CLAUDE_AI_MCP_TIMEOUT_MS = isBackendServerSession
+					? serverMcpStartupTimeoutMs
+					: 5_000;
 				const claudeaiConnect = claudeaiConfigPromise.then(
 					(claudeaiConfigs) => {
 						if (Object.keys(claudeaiConfigs).length > 0) {

@@ -3,13 +3,17 @@ import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { ActionBar } from './ActionBar';
 
 const streamContext = {
+  sessionId: null,
   sendMessage: vi.fn(async () => true),
+  respondToPermission: vi.fn(async () => {}),
   executeSlashCommand: vi.fn(async () => {}),
   cancelStream: vi.fn(),
   isStreaming: false,
   messages: [],
+  pendingPermissions: [],
   error: null,
   clearMessages: vi.fn(),
+  loadMessages: vi.fn(),
 };
 
 const apiClient = {

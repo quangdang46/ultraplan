@@ -1,15 +1,85 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { getApiClient } from '../api/client';
 import type { ReplyQuote, ServerEvent } from '../api/types';
-import type { StreamState, Message, ToolItem } from '../features/chat/types';
+import type {
+  PendingPermission,
+  StreamState,
+  Message,
+  ToolItem,
+} from '../features/chat/types';
 import { toToolResultText } from '../features/chat/streamParser';
 import { ensureApiAuthenticated } from '../features/chat/streamTransport';
 
+function extractBlockText(event: Extract<ServerEvent, { type: 'content_block' }>): string {
+  const block = event.data.block;
+  if (typeof block.text === 'string') {
+    return block.text;
+  }
+
+  const rawContent = (block as { content?: unknown }).content;
+  if (!Array.isArray(rawContent)) {
+    return '';
+  }
+
+  return rawContent
+    .map((item) => {
+      if (typeof item === 'string') return item;
+      if (!item || typeof item !== 'object') return '';
+      const record = item as Record<string, unknown>;
+      if (typeof record.text === 'string') return record.text;
+      if (typeof record.content === 'string') return record.content;
+      return '';
+    })
+    .filter(Boolean)
+    .join('');
+}
+
+function formatToolTitle(name: string, input: Record<string, unknown>): string {
+  const serialized = JSON.stringify(input);
+  const preview = serialized.length > 50 ? `${serialized.slice(0, 50)}...` : serialized;
+  return `${name} - ${preview}`;
+}
+
+function toPendingPermission(requestId: string, request: unknown): PendingPermission {
+  const record = request && typeof request === 'object'
+    ? request as Record<string, unknown>
+    : {};
+
+  const toolInput = record.input && typeof record.input === 'object'
+    ? record.input as Record<string, unknown>
+    : record.tool_input && typeof record.tool_input === 'object'
+      ? record.tool_input as Record<string, unknown>
+      : {};
+
+  const toolName =
+    typeof record.tool_name === 'string' && record.tool_name.trim()
+      ? record.tool_name.trim()
+      : typeof record.subtype === 'string' && record.subtype.trim()
+        ? record.subtype.trim()
+        : 'Permission request';
+
+  const description =
+    typeof record.description === 'string' && record.description.trim()
+      ? record.description.trim()
+      : typeof record.message === 'string' && record.message.trim()
+        ? record.message.trim()
+        : undefined;
+
+  return {
+    requestId,
+    toolName,
+    toolInput,
+    description,
+  };
+}
+
 export function useStream() {
   const [state, setState] = useState<StreamState>({
+    sessionId: null,
     isStreaming: false,
     messages: [],
     activeTools: new Map(),
+    pendingPermissions: [],
     error: null,
   });
 
@@ -20,19 +90,22 @@ export function useStream() {
     await ensureApiAuthenticated(client);
   }, [client]);
 
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
+
   const sendMessage = useCallback(
     async (content: string, quote?: ReplyQuote, sessionId?: string): Promise<boolean> => {
-      // Cancel any existing stream
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
 
       abortControllerRef.current = new AbortController();
 
-      // Ensure authenticated before sending
       await ensureAuthenticated();
 
-      // Add user message
       const userMessageId = `user_${Date.now()}`;
       const userMessage: Message = {
         id: userMessageId,
@@ -41,49 +114,48 @@ export function useStream() {
         toolCalls: [],
         quote,
       };
+
+      const assistantPlaceholder: Message = {
+        id: `assistant_placeholder_${Date.now()}`,
+        role: 'assistant',
+        content: '',
+        toolCalls: [],
+      };
+
       setState((s) => ({
         ...s,
+        sessionId: sessionId ?? s.sessionId,
         isStreaming: true,
         error: null,
-        messages: [
-          ...s.messages,
-          userMessage,
-        ],
-      }));
-
-      // Add placeholder assistant message - track its index so we can update it
-      setState((s) => ({
-        ...s,
-        messages: [
-          ...s.messages,
-          {
-            id: `assistant_placeholder_${Date.now()}`,
-            role: 'assistant',
-            content: '',
-            toolCalls: [],
-          },
-        ],
+        messages: [...s.messages, userMessage, assistantPlaceholder],
       }));
 
       try {
         let currentMessageContent = '';
 
-        for await (const event of client.streamChat({ message: content, quote, sessionId })) {
-          console.log('SSE event:', event.type, event.data);
+        for await (const event of client.streamChat(
+          { message: content, quote, sessionId },
+          { signal: abortControllerRef.current.signal }
+        )) {
           switch (event.type) {
+            case 'session_created': {
+              setState((s) => ({
+                ...s,
+                sessionId: event.data.sessionId,
+              }));
+              break;
+            }
+
             case 'message_start': {
-              // Message started - update placeholder content tracking
               break;
             }
 
             case 'content_delta': {
-              // Text content streaming
               const textDelta = event.data.delta?.text || '';
               currentMessageContent += textDelta;
 
               setState((s) => {
                 const messages = [...s.messages];
-                // Always update the LAST message (our placeholder)
                 const lastMsg = messages[messages.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant') {
                   messages[messages.length - 1] = {
@@ -96,12 +168,30 @@ export function useStream() {
               break;
             }
 
-            case 'tool_use': {
-              // Tool call started
+            case 'content_block': {
+              const text = extractBlockText(event);
+              if (text) {
+                currentMessageContent = text;
+                setState((s) => {
+                  const messages = [...s.messages];
+                  const lastMsg = messages[messages.length - 1];
+                  if (lastMsg && lastMsg.role === 'assistant') {
+                    messages[messages.length - 1] = {
+                      ...lastMsg,
+                      content: text,
+                    };
+                  }
+                  return { ...s, messages };
+                });
+              }
+              break;
+            }
+
+            case 'tool_start': {
               const toolData = event.data;
               const toolItem: ToolItem = {
                 id: toolData.id,
-                title: `${toolData.name} - ${JSON.stringify(toolData.input)?.slice(0, 50)}...`,
+                title: formatToolTitle(toolData.name, toolData.input),
                 kind: toolData.name,
                 status: 'running',
                 outputLines: [],
@@ -126,8 +216,6 @@ export function useStream() {
             }
 
             case 'tool_result': {
-              // Tool completed
-              console.log('tool_result event:', event.data);
               const resultData = event.data as Record<string, unknown>;
               const toolCallId = String(
                 resultData.toolCallId ?? resultData.tool_use_id ?? resultData.id ?? ''
@@ -187,9 +275,42 @@ export function useStream() {
               break;
             }
 
+            case 'permission_request': {
+              const request = toPendingPermission(
+                event.data.request_id,
+                event.data.request,
+              );
+              setState((s) => ({
+                ...s,
+                pendingPermissions: [
+                  ...s.pendingPermissions.filter(
+                    (item) => item.requestId !== request.requestId,
+                  ),
+                  request,
+                ],
+              }));
+              break;
+            }
+
+            case 'control_response': {
+              setState((s) => ({
+                ...s,
+                pendingPermissions: s.pendingPermissions.filter(
+                  (item) => item.requestId !== event.data.request_id,
+                ),
+              }));
+              break;
+            }
+
+            case 'message_end': {
+              setState((s) => ({ ...s, isStreaming: false }));
+              break;
+            }
+
             case 'error': {
               setState((s) => ({
                 ...s,
+                isStreaming: false,
                 error: event.data.message,
               }));
               break;
@@ -197,12 +318,10 @@ export function useStream() {
           }
         }
 
-        // Stream ended
         setState((s) => ({ ...s, isStreaming: false }));
         return true;
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
-          // Aborted - not an error
           setState((s) => ({ ...s, isStreaming: false }));
           return false;
         } else {
@@ -219,12 +338,34 @@ export function useStream() {
     [client, ensureAuthenticated]
   );
 
+  const respondToPermission = useCallback(
+    async (requestId: string, approved: boolean): Promise<void> => {
+      if (!state.sessionId) {
+        throw new Error('No active session available for permission response');
+      }
+
+      await ensureAuthenticated();
+      await client.respondToPermission({
+        sessionId: state.sessionId,
+        request_id: requestId,
+        approved,
+      });
+
+      setState((s) => ({
+        ...s,
+        pendingPermissions: s.pendingPermissions.filter(
+          (item) => item.requestId !== requestId,
+        ),
+      }));
+    },
+    [client, ensureAuthenticated, state.sessionId]
+  );
+
   const executeSlashCommand = useCallback(
-    async (command: string): Promise<void> => {
+    async (command: string, sessionId?: string): Promise<void> => {
       const normalized = command.trim();
       if (!normalized) return;
-      // Keep slash command submission on the same stream path as CLI chat flow.
-      await sendMessage(normalized);
+      await sendMessage(normalized, undefined, sessionId);
     },
     [sendMessage]
   );
@@ -237,7 +378,13 @@ export function useStream() {
   }, []);
 
   const clearMessages = useCallback(() => {
-    setState((s) => ({ ...s, messages: [], activeTools: new Map() }));
+    setState((s) => ({
+      ...s,
+      messages: [],
+      activeTools: new Map(),
+      pendingPermissions: [],
+      error: null,
+    }));
   }, []);
 
   const loadMessages = useCallback((messages: Message[]) => {
@@ -245,6 +392,7 @@ export function useStream() {
       ...s,
       messages,
       activeTools: new Map(),
+      pendingPermissions: [],
       error: null,
       isStreaming: false,
     }));
@@ -253,6 +401,7 @@ export function useStream() {
   return {
     ...state,
     sendMessage,
+    respondToPermission,
     executeSlashCommand,
     cancelStream,
     clearMessages,

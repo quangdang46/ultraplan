@@ -1,7 +1,10 @@
+// src/server/suggest/pathProvider.ts
+// Path-mode suggestions (~/, ./, ../, /)
+
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { readdir } from 'node:fs/promises'
-import type { FileSuggestion } from '../types'
-import { MAX_DIR_SCAN, MAX_PATH_RESULTS, PATH_MODE_PREFIXES } from '../types'
+import type { FileSuggestion } from './types.js'
+import { MAX_DIR_SCAN, MAX_PATH_RESULTS, PATH_MODE_PREFIXES } from './types.js'
 
 function normalizePath(value: string): string {
   return value.replaceAll('\\', '/')

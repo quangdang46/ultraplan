@@ -14,6 +14,13 @@ export type ToolItem = {
   elapsedMs?: number;
 };
 
+export type PendingPermission = {
+  requestId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  description?: string;
+};
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -23,8 +30,10 @@ export interface Message {
 }
 
 export interface StreamState {
+  sessionId: string | null;
   isStreaming: boolean;
   messages: Message[];
   activeTools: Map<string, ToolItem>;
+  pendingPermissions: PendingPermission[];
   error: string | null;
 }

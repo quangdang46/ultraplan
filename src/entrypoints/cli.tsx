@@ -147,11 +147,8 @@ async function main(): Promise<void> {
     const { enableConfigs } = await import('../utils/config.js')
     enableConfigs()
     const port = parseInt(args[1]?.replace('--port=', '') || process.env.CLAUDE_CODE_SERVER_PORT || '8080')
-    const { createServer } = await import('../../packages/backend/src/index.js')
-    const server = createServer({ port })
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`🔌 Ultraplan API server running on http://localhost:${port}`)
-    Bun.serve({ port, fetch: server.fetch, idleTimeout: 0 })
+    const { runServerMode } = await import('../server/serverMain.js')
+    await runServerMode({ port })
     return
   }
 

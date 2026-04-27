@@ -2,15 +2,26 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useStreamContext } from '../../hooks/useStreamContext';
 import { ConversationToolItem } from './ConversationToolItem';
+import { PermissionPanel } from './PermissionPanel';
 import { ThinkingIndicator } from './ThinkingIndicator';
 
 export function Conversation() {
-  const { messages, isStreaming, error: streamError } = useStreamContext();
+  const {
+    messages,
+    isStreaming,
+    error: streamError,
+    pendingPermissions,
+    respondToPermission,
+  } = useStreamContext();
 
   return (
     <div className="flex flex-col h-full">
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <PermissionPanel
+          requests={pendingPermissions}
+          onRespond={respondToPermission}
+        />
+
         {messages.length === 0 && (
           <div className="text-charcoal-warm text-center p-8">
             Send a message to start a conversation

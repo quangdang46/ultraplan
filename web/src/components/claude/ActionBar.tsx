@@ -213,7 +213,7 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
     const quotePayload: ReplyQuote | undefined = quote ? { text: quote } : undefined;
 
     if (text.startsWith("/")) {
-      await executeSlashCommand(text);
+      await executeSlashCommand(text, sessionId ?? undefined);
       setReply("");
       setCursorPos(0);
       setSuggestions([]);

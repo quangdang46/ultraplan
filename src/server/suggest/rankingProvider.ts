@@ -1,3 +1,6 @@
+// src/server/suggest/rankingProvider.ts
+// File ranking/scoring for suggestions
+
 import { basename } from 'node:path'
 
 export function scoreFile(file: string, query: string): number {
