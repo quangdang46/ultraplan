@@ -16,7 +16,12 @@ import {
 } from "@/components/claude/SelectionTooltip";
 import type { Session } from "@/api/types";
 import { getApiClient } from "@/api/client";
-import type { Message } from "@/features/chat/types";
+import { hydrateSessionMessages } from "@/features/chat/hydrateSessionMessages";
+import {
+	shouldAdoptPendingSessionRoute,
+	shouldHydrateRouteSession,
+	shouldPreserveLiveSession,
+} from "@/features/chat/sessionRuntime";
 import { ensureApiAuthenticated } from "@/features/chat/streamTransport";
 import { useSessions } from "@/hooks/useSessions";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
@@ -35,6 +40,7 @@ const Index = () => {
 	const location = useLocation();
 	const { chatId } = useParams<{ chatId?: string }>();
 	const { sessions, loading, error, refetch, createSession, killSession, renameSession } = useSessions();
+	const resolvedSessionId = chatId ?? activeSession?.id ?? null;
 
 	useEffect(() => {
 		if (location.pathname === "/") {
@@ -70,9 +76,6 @@ const Index = () => {
 		} else if (action === "explain") {
 			const short = text.length > 60 ? text.slice(0, 60) + "…" : text;
 			setQuote(`Explain: "${short}"`);
-		} else if (action === "visualize") {
-			if (!diagramsOpen) setDiagramsOpen(true);
-			setRenderToken((t) => t + 1);
 		}
 	}
 
@@ -106,16 +109,17 @@ const Index = () => {
 						<div className="flex-1 min-w-0">
 							<section className="flex h-full flex-col bg-ivory min-h-0">
 								<PanelTop
-									title={activeSession?.title ?? "Select a session"}
-									diagramsOpen={diagramsOpen}
-									onToggleDiagrams={() => setDiagramsOpen((v) => !v)}
+									title={activeSession?.title ?? (chatId ? "Loading session" : "New session")}
+									status={activeSession?.status ?? null}
+									lastMessageAt={activeSession?.lastMessageAt ?? null}
 								/>
 
 								<div className="flex-1 min-h-0 w-full overflow-hidden">
 									<ResizablePanelGroup direction="horizontal">
 										<ResizablePanel defaultSize={diagramsOpen ? 72 : 100} minSize={45}>
-											<StreamProvider key={activeSession?.id ?? 'none'}>
-												<SessionRuntimeLoader sessionId={activeSession?.id ?? null} enabled={!isMobile} />
+											<StreamProvider>
+												<SessionRouteSync chatId={chatId ?? null} onSessionReady={refetch} />
+												<SessionRuntimeLoader sessionId={resolvedSessionId} enabled={!isMobile} />
 												<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
 													<div
 														ref={desktopContentRef}
@@ -127,7 +131,7 @@ const Index = () => {
 													<ActionBar
 														quote={quote}
 														onClearQuote={() => setQuote(null)}
-														sessionId={activeSession?.id}
+														sessionId={resolvedSessionId}
 													/>
 												</div>
 											</StreamProvider>
@@ -171,16 +175,17 @@ const Index = () => {
 						<ResizablePanel defaultSize={76} minSize={64}>
 							<section className="flex h-full flex-col bg-ivory min-h-0">
 								<PanelTop
-									title={activeSession?.title ?? "Select a session"}
-									diagramsOpen={diagramsOpen}
-									onToggleDiagrams={() => setDiagramsOpen((v) => !v)}
+									title={activeSession?.title ?? (chatId ? "Loading session" : "New session")}
+									status={activeSession?.status ?? null}
+									lastMessageAt={activeSession?.lastMessageAt ?? null}
 								/>
 
 								<div className="flex-1 min-h-0 w-full overflow-hidden">
 									<ResizablePanelGroup direction="horizontal">
 										<ResizablePanel defaultSize={diagramsOpen ? 72 : 100} minSize={45}>
-											<StreamProvider key={activeSession?.id ?? 'none'}>
-												<SessionRuntimeLoader sessionId={activeSession?.id ?? null} enabled={!isMobile} />
+											<StreamProvider>
+												<SessionRouteSync chatId={chatId ?? null} onSessionReady={refetch} />
+												<SessionRuntimeLoader sessionId={resolvedSessionId} enabled={!isMobile} />
 												<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
 													<div
 														ref={desktopContentRef}
@@ -192,7 +197,7 @@ const Index = () => {
 													<ActionBar
 														quote={quote}
 														onClearQuote={() => setQuote(null)}
-														sessionId={activeSession?.id}
+														sessionId={resolvedSessionId}
 													/>
 												</div>
 											</StreamProvider>
@@ -222,15 +227,16 @@ const Index = () => {
 			{isMobile && (
 			<div className="h-full bg-ivory">
 				<section className="flex h-full flex-col min-h-0">
-					<PanelTop
-						title={activeSession?.title ?? "Select a session"}
-						diagramsOpen={diagramsOpen}
-						onToggleDiagrams={() => setDiagramsOpen((v) => !v)}
-						onOpenSidebar={() => setMobileSidebarOpen(true)}
-					/>
-					<StreamProvider key={activeSession?.id ?? 'none'}>
-						<SessionRuntimeLoader sessionId={activeSession?.id ?? null} enabled={isMobile} />
-						<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
+						<PanelTop
+							title={activeSession?.title ?? (chatId ? "Loading session" : "New session")}
+							status={activeSession?.status ?? null}
+							lastMessageAt={activeSession?.lastMessageAt ?? null}
+							onOpenSidebar={() => setMobileSidebarOpen(true)}
+						/>
+						<StreamProvider>
+							<SessionRouteSync chatId={chatId ?? null} onSessionReady={refetch} />
+							<SessionRuntimeLoader sessionId={resolvedSessionId} enabled={isMobile} />
+							<div className="h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
 							<div
 								ref={mobileContentRef}
 								className="flex-1 min-h-0 overflow-y-auto px-4 py-4 scrollbar-warm"
@@ -240,7 +246,7 @@ const Index = () => {
 							<ActionBar
 								quote={quote}
 								onClearQuote={() => setQuote(null)}
-								sessionId={activeSession?.id}
+								sessionId={resolvedSessionId}
 							/>
 						</div>
 					</StreamProvider>
@@ -301,16 +307,73 @@ const Index = () => {
 
 export default Index;
 
+function SessionRouteSync({
+	chatId,
+	onSessionReady,
+}: {
+	chatId: string | null;
+	onSessionReady: () => void | Promise<void>;
+}) {
+	const { sessionId, pendingRouteSync, acknowledgeRouteSync } = useStreamContext();
+	const navigate = useNavigate();
+
+	useEffect(() => {
+		if (!shouldAdoptPendingSessionRoute(chatId, sessionId, pendingRouteSync)) {
+			return;
+		}
+		acknowledgeRouteSync();
+		navigate(`/chat/${sessionId}`, { replace: true });
+		void onSessionReady();
+	}, [
+		chatId,
+		sessionId,
+		pendingRouteSync,
+		acknowledgeRouteSync,
+		navigate,
+		onSessionReady,
+	]);
+
+	return null;
+}
+
 function SessionRuntimeLoader({ sessionId, enabled }: { sessionId: string | null; enabled: boolean }) {
-	const { attachSession, detachSession, loadMessages } = useStreamContext();
+	const {
+		sessionId: liveSessionId,
+		isStreaming,
+		messages,
+		attachSession,
+		detachSession,
+		clearMessages,
+		loadMessages,
+	} = useStreamContext();
+	const hasLiveMessages = messages.length > 0;
 
 	useEffect(() => {
 		let cancelled = false;
 		const client = getApiClient();
 		if (!enabled || !sessionId) {
 			detachSession();
-			loadMessages([]);
+			if (!isStreaming) {
+				clearMessages(null);
+			}
 			return;
+		}
+
+		if (shouldPreserveLiveSession(sessionId, liveSessionId, isStreaming)) {
+			detachSession();
+			return;
+		}
+
+		if (!shouldHydrateRouteSession(sessionId, liveSessionId, hasLiveMessages)) {
+			void attachSession(sessionId);
+			return () => {
+				cancelled = true;
+				detachSession();
+			};
+		}
+
+		if (liveSessionId !== sessionId) {
+			loadMessages([], sessionId);
 		}
 
 		const hydrateAndAttach = async () => {
@@ -319,21 +382,16 @@ function SessionRuntimeLoader({ sessionId, enabled }: { sessionId: string | null
 				const msgs = await client.getSessionMessages(sessionId);
 				if (cancelled) return;
 
-				const converted: Message[] = msgs
-					.filter(
+				const converted = hydrateSessionMessages(
+					msgs.filter(
 						(
 							m,
 						): m is typeof m & {
 							role: "user" | "assistant";
 						} => m.role === "user" || m.role === "assistant",
-					)
-					.map((m, index) => ({
-						id: `history_${m.timestamp}_${index}`,
-						role: m.role,
-						content: m.content,
-						toolCalls: [],
-					}));
-				loadMessages(converted);
+					),
+				);
+				loadMessages(converted, sessionId);
 			} catch (err) {
 				if (!cancelled) {
 					console.error("Failed to load session history", err);
@@ -350,7 +408,17 @@ function SessionRuntimeLoader({ sessionId, enabled }: { sessionId: string | null
 			cancelled = true;
 			detachSession();
 		};
-	}, [sessionId, enabled, attachSession, detachSession, loadMessages]);
+	}, [
+		sessionId,
+		enabled,
+		liveSessionId,
+		hasLiveMessages,
+		isStreaming,
+		attachSession,
+		detachSession,
+		clearMessages,
+		loadMessages,
+	]);
 
 	return null;
 }

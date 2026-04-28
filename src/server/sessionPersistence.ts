@@ -101,12 +101,14 @@ export async function loadTranscriptMessages(
                 : null
         if (!role) continue
 
-        const text = extractText(entry)
-        if (!text) continue
+        const blocks = extractBlocks(entry)
+        const text = extractText(entry, blocks)
+        if (!text && blocks.length === 0) continue
 
         messages.push({
           role,
           content: text,
+          ...(blocks.length > 0 ? { blocks } : {}),
           timestamp:
             typeof entry.timestamp === 'string'
               ? entry.timestamp
@@ -123,7 +125,10 @@ export async function loadTranscriptMessages(
   }
 }
 
-function extractText(entry: Record<string, unknown>): string | null {
+function extractText(
+  entry: Record<string, unknown>,
+  blocks: NonNullable<SessionMessage['blocks']>,
+): string {
   const direct = typeof entry.message === 'string'
     ? entry.message
     : typeof entry.content === 'string'
@@ -133,21 +138,108 @@ function extractText(entry: Record<string, unknown>): string | null {
         : null
   if (direct) return direct.trim()
 
+  return blocks
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text!.trim())
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+}
+
+function extractBlocks(
+  entry: Record<string, unknown>,
+): NonNullable<SessionMessage['blocks']> {
   const msg = entry.message as Record<string, unknown> | undefined
-  if (!msg) return null
+  const rawContent = Array.isArray(msg?.content)
+    ? msg.content
+    : Array.isArray(entry.content)
+      ? entry.content
+      : undefined
 
-  const content = msg.content
-  if (typeof content === 'string') return content.trim()
-  if (!Array.isArray(content)) return null
+  if (!rawContent) {
+    const direct = typeof entry.message === 'string'
+      ? entry.message
+      : typeof entry.content === 'string'
+        ? entry.content
+        : typeof entry.text === 'string'
+          ? entry.text
+          : null
+    return direct?.trim()
+      ? [{ type: 'text', text: direct.trim() }]
+      : []
+  }
 
-  const texts: string[] = []
-  for (const block of content) {
+  const blocks: NonNullable<SessionMessage['blocks']> = []
+  for (const block of rawContent) {
     if (!block || typeof block !== 'object') continue
     const obj = block as Record<string, unknown>
     if (obj.type === 'text' && typeof obj.text === 'string' && obj.text.trim()) {
-      texts.push(obj.text.trim())
+      blocks.push({ type: 'text', text: obj.text.trim() })
+      continue
+    }
+    if (
+      obj.type === 'thinking' &&
+      typeof obj.thinking === 'string' &&
+      obj.thinking.trim()
+    ) {
+      blocks.push({ type: 'thinking', thinking: obj.thinking.trim() })
+      continue
+    }
+    if (obj.type === 'tool_use') {
+      blocks.push({
+        type: 'tool_use',
+        id: typeof obj.id === 'string' ? obj.id : undefined,
+        name: typeof obj.name === 'string' ? obj.name : undefined,
+        input:
+          obj.input && typeof obj.input === 'object'
+            ? (obj.input as Record<string, unknown>)
+            : {},
+      })
+      continue
+    }
+    if (obj.type === 'tool_result') {
+      const content = normalizeToolText(obj.content ?? obj.text)
+      blocks.push({
+        type: 'tool_result',
+        tool_use_id:
+          typeof obj.tool_use_id === 'string'
+            ? obj.tool_use_id
+            : typeof obj.id === 'string'
+              ? obj.id
+              : undefined,
+        content,
+        is_error: Boolean(obj.is_error),
+      })
     }
   }
 
-  return texts.join('\n').trim() || null
+  return blocks
+}
+
+function normalizeToolText(raw: unknown): string {
+  if (typeof raw === 'string') return raw.trim()
+  if (!raw) return ''
+
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item) => {
+        if (typeof item === 'string') return item
+        if (!item || typeof item !== 'object') return ''
+        const record = item as Record<string, unknown>
+        if (typeof record.text === 'string') return record.text
+        if (typeof record.content === 'string') return record.content
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim()
+  }
+
+  if (typeof raw === 'object') {
+    const record = raw as Record<string, unknown>
+    if (typeof record.text === 'string') return record.text.trim()
+    if (record.content !== undefined) return normalizeToolText(record.content)
+  }
+
+  return String(raw).trim()
 }

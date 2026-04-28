@@ -17,6 +17,12 @@ const streamContext = {
 };
 
 const apiClient = {
+  getState: vi.fn(async () => ({
+    gitBranch: "main",
+    model: "sonnet",
+    permissionMode: "default",
+    cwd: "/repo",
+  })),
   suggestFiles: vi.fn(async () => ({ items: [] })),
   suggestCommands: vi.fn(async () => ({ items: [] })),
 };
@@ -45,14 +51,18 @@ describe('ActionBar quote submit', () => {
     await waitFor(() => {
       expect(streamContext.sendMessage).toHaveBeenCalledWith('hello', {
         text: 'quoted text',
-      });
+      }, undefined);
     });
     expect(onClearQuote).toHaveBeenCalledTimes(1);
   });
 
-  test('escape clears quote when no suggestion popup', () => {
+  test('escape clears quote when no suggestion popup', async () => {
     const onClearQuote = vi.fn();
     render(<ActionBar quote="quoted text" onClearQuote={onClearQuote} />);
+
+    await waitFor(() => {
+      expect(apiClient.getState).toHaveBeenCalled();
+    });
 
     const input = screen.getByPlaceholderText('Reply…');
     fireEvent.keyDown(input, { key: 'Escape' });
@@ -70,7 +80,7 @@ describe('ActionBar quote submit', () => {
     await waitFor(() => {
       expect(streamContext.sendMessage).toHaveBeenCalledWith('', {
         text: 'quote only',
-      });
+      }, undefined);
     });
     expect(onClearQuote).toHaveBeenCalledTimes(1);
   });

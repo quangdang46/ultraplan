@@ -14,6 +14,7 @@ import { listSessionsImpl, type SessionInfo } from '../utils/listSessionsImpl.js
 import {
   loadTranscriptMessages,
 } from './sessionPersistence.js'
+import { mergeSessionMessages } from './sessionMessageMerge.js'
 import { spawnSessionProcess } from './processStarter.js'
 import {
   registerSession,
@@ -537,9 +538,27 @@ class SessionManagerClass {
     if (!record) return []
 
     await this.ensureMessagesLoaded(record)
-    const messages = record.messages.map((message) => ({ ...message }))
-    if (record.assistantDraft?.content) {
+    const transcriptMessages = await loadTranscriptMessages(
+      record.session.id,
+      record.session.cwd,
+    )
+    const mergedMessages = mergeSessionMessages(
+      transcriptMessages,
+      record.messages,
+    )
+    const messages = mergedMessages.map((message) => ({ ...message }))
+    if (
+      record.assistantDraft?.content &&
+      !(
+        messages.at(-1)?.role === 'assistant' &&
+        messages.at(-1)?.content === record.assistantDraft.content
+      )
+    ) {
       messages.push({ ...record.assistantDraft })
+    }
+    if (mergedMessages.length > 0) {
+      record.messages = mergedMessages
+      record.messagesLoaded = true
     }
     return messages
   }
@@ -656,6 +675,14 @@ class SessionManagerClass {
         ...record.assistantDraft,
         content: record.assistantDraft.content.trim(),
       })
+      record.session = {
+        ...record.session,
+        status: 'active',
+        lastMessageAt: laterIso(
+          record.session.lastMessageAt,
+          record.assistantDraft.timestamp,
+        ),
+      }
     }
     record.assistantDraft = undefined
   }

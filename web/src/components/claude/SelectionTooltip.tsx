@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, Copy, Info, BarChart3 } from "lucide-react";
+import { MessageSquare, Copy, Info } from "lucide-react";
 
-export type SelectionAction = "reply" | "copy" | "explain" | "visualize";
+export type SelectionAction = "reply" | "copy" | "explain";
 
 type Props = {
   /** Element whose selections should trigger the tooltip. */
@@ -80,9 +80,6 @@ export const SelectionTooltip = ({ containerRef, onAction }: Props) => {
       <div className="h-px bg-white/10 mx-2 my-0.5" />
       <TtBtn icon={<Info className="w-3 h-3" />} onClick={() => handle("explain")}>
         Explain this
-      </TtBtn>
-      <TtBtn icon={<BarChart3 className="w-3 h-3" />} onClick={() => handle("visualize")}>
-        Visualize as diagram
       </TtBtn>
     </div>
   );

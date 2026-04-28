@@ -1,14 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  ArrowUp,
   GitBranch,
-  Hash,
-  Settings,
-  MessageSquare,
-  Bell,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  FolderOpen,
   Trash2,
 } from "lucide-react";
 import type { Session } from "@/api/types";
@@ -40,17 +36,12 @@ export const Sidebar = ({
   collapsed = false,
   onToggleCollapse,
 }: Props) => {
-  const [draft, setDraft] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
-  const taRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    const ta = taRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
-  }, [draft]);
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.id === activeId) ?? null,
+    [activeId, sessions],
+  );
 
   function handleStartRename(id: string, currentTitle: string) {
     setEditingId(id)
@@ -124,29 +115,26 @@ export const Sidebar = ({
           </button>
         </div>
 
-        {/* Composer */}
-        <div className="relative mb-2">
-          <textarea
-            ref={taRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Ask Claude to write code…"
-            rows={2}
-            className="w-full bg-white border border-border-warm rounded-[11px] px-[11px] py-2 pr-10 text-[12.5px] text-olive-gray font-sans resize-none min-h-[58px] max-h-[120px] leading-[1.5] outline-none focus:shadow-[0_0_0_1.5px_hsl(var(--terracotta))] transition-shadow placeholder:text-stone-gray"
-          />
-          <button
-            disabled={!draft.trim()}
-            className="absolute right-[7px] bottom-[7px] w-[26px] h-[26px] bg-terracotta hover:bg-coral disabled:opacity-35 disabled:cursor-default rounded-[7px] text-white flex items-center justify-center transition-colors"
-            aria-label="Send"
-          >
-            <ArrowUp className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <button
+          onClick={handleCreateSession}
+          className="w-full rounded-[11px] border border-border-warm bg-white px-3 py-2.5 text-left text-[12px] text-charcoal-warm transition-colors hover:bg-[#fcfbf8]"
+        >
+          <span className="flex items-center gap-2 font-medium text-near-black">
+            <Plus className="w-3.5 h-3.5 text-terracotta" />
+            New session
+          </span>
+          <span className="mt-1 block text-[11px] text-stone-gray">
+            Start from the main composer in the chat pane to create a real session thread.
+          </span>
+        </button>
 
-        {/* Chips */}
-        <div className="flex gap-[5px]">
-          <Chip icon={<GitBranch className="w-2.5 h-2.5" />}>buttondown/monorepo</Chip>
-          <Chip icon={<Hash className="w-2.5 h-2.5" />}>Default</Chip>
+        <div className="mt-2 flex flex-wrap gap-[5px]">
+          {activeSession?.branch && (
+            <Chip icon={<GitBranch className="w-2.5 h-2.5" />}>{activeSession.branch}</Chip>
+          )}
+          {activeSession?.cwd && (
+            <Chip icon={<FolderOpen className="w-2.5 h-2.5" />}>{activeSession.cwd}</Chip>
+          )}
         </div>
       </div>
 
@@ -161,9 +149,7 @@ export const Sidebar = ({
           >
             <Plus className="w-3.5 h-3.5" />
           </button>
-          <button className="text-[11px] text-stone-gray hover:text-near-black transition-colors">
-            Active ↓
-          </button>
+          <span className="text-[11px] text-stone-gray">Recent</span>
         </div>
       </div>
 
@@ -202,30 +188,15 @@ export const Sidebar = ({
         ))}
       </div>
 
-      {/* Footer */}
-      <div className="border-t border-border-warm px-3 py-2 flex gap-0.5 bg-parchment flex-shrink-0">
-        <FootBtn label="Settings"><Settings className="w-3.5 h-3.5" /></FootBtn>
-        <FootBtn label="Chat"><MessageSquare className="w-3.5 h-3.5" /></FootBtn>
-        <FootBtn label="Notifications"><Bell className="w-3.5 h-3.5" /></FootBtn>
-      </div>
     </aside>
   );
 };
 
 const Chip = ({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) => (
-  <div className="flex items-center gap-1 bg-warm-sand text-charcoal-warm text-[11px] px-[9px] py-[3px] rounded-[7px] shadow-ring hover:shadow-ring-strong cursor-pointer whitespace-nowrap transition-shadow">
+  <div className="max-w-full flex items-center gap-1 bg-warm-sand text-charcoal-warm text-[11px] px-[9px] py-[3px] rounded-[7px] whitespace-nowrap">
     <span className="text-olive-gray flex-shrink-0">{icon}</span>
-    {children}
+    <span className="truncate">{children}</span>
   </div>
-);
-
-const FootBtn = ({ children, label }: { children: React.ReactNode; label: string }) => (
-  <button
-    title={label}
-    className="w-[31px] h-[31px] flex items-center justify-center rounded-[7px] text-stone-gray hover:bg-warm-sand hover:text-near-black transition-colors"
-  >
-    {children}
-  </button>
 );
 
 const SessionRow = ({

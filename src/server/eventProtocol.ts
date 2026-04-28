@@ -9,6 +9,10 @@ export type ServerEvent =
   | { type: 'message_start'; data: { id: string } }
   | { type: 'message_end'; data: { id: string; usage: UsageStats } }
   | { type: 'content_delta'; data: { delta: { type: 'text_delta'; text: string } } }
+  | {
+      type: 'thinking_delta'
+      data: { delta: { type: 'thinking_delta'; thinking: string } }
+    }
   | { type: 'content_block'; data: { block: ContentBlock } }
   | { type: 'tool_start'; data: { id: string; name: string; input: Record<string, unknown> } }
   | { type: 'tool_end'; data: { id: string } }
@@ -37,8 +41,9 @@ export interface UsageStats {
 }
 
 export interface ContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result'
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result'
   text?: string
+  thinking?: string
   id?: string
   name?: string
   input?: Record<string, unknown>

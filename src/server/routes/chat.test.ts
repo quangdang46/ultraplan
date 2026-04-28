@@ -48,6 +48,74 @@ describe('mapSubprocessEventToServerEvents', () => {
     ])
   })
 
+  test('maps partial stream text and tool_use events', () => {
+    const toolStartEvents = mapSubprocessEventToServerEvents({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: {
+          type: 'tool_use',
+          id: 'tool-2',
+          name: 'Bash',
+          input: { command: 'pwd' },
+        },
+      },
+    })
+
+    const textDeltaEvents = mapSubprocessEventToServerEvents({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 1,
+        delta: {
+          type: 'text_delta',
+          text: 'hello partial',
+        },
+      },
+    })
+
+    const thinkingDeltaEvents = mapSubprocessEventToServerEvents({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 2,
+        delta: {
+          type: 'thinking_delta',
+          thinking: 'Planning next step',
+        },
+      },
+    })
+
+    expect(toolStartEvents).toEqual([
+      {
+        type: 'tool_start',
+        data: {
+          id: 'tool-2',
+          name: 'Bash',
+          input: { command: 'pwd' },
+        },
+      },
+    ])
+    expect(textDeltaEvents).toEqual([
+      {
+        type: 'content_delta',
+        data: { delta: { type: 'text_delta', text: 'hello partial' } },
+      },
+    ])
+    expect(thinkingDeltaEvents).toEqual([
+      {
+        type: 'thinking_delta',
+        data: {
+          delta: {
+            type: 'thinking_delta',
+            thinking: 'Planning next step',
+          },
+        },
+      },
+    ])
+  })
+
   test('maps error results to error plus message_end', () => {
     const events = mapSubprocessEventToServerEvents({
       type: 'result',
@@ -205,6 +273,171 @@ describe('chatRoutes', () => {
         cwd: '/repo',
       },
     ])
+  })
+
+  test('dedupes final assistant messages after partial stream events', async () => {
+    const subscribers = new Set<(event: unknown) => void>()
+    const handle: SessionHandle = {
+      sessionId: '550e8400-e29b-41d4-a716-446655440004',
+      pid: 42,
+      cwd: '/repo',
+      startedAt: Date.parse('2026-04-27T00:00:00.000Z'),
+      child: {} as SessionHandle['child'],
+      done: Promise.resolve('completed' as SessionDoneStatus),
+      kill() {},
+      forceKill() {},
+      async waitForReady() {},
+      writeStdin() {},
+      subscribeEvents(cb) {
+        subscribers.add(cb)
+        return () => subscribers.delete(cb)
+      },
+      async enqueueMessage() {
+        for (const cb of subscribers) {
+          cb({
+            type: 'stream_event',
+            event: {
+              type: 'content_block_start',
+              index: 0,
+              content_block: {
+                type: 'tool_use',
+                id: 'tool-live-1',
+                name: 'Read',
+                input: { path: 'README.md' },
+              },
+            },
+          })
+          cb({
+            type: 'stream_event',
+            event: {
+              type: 'content_block_delta',
+              index: 1,
+              delta: {
+                type: 'text_delta',
+                text: 'hello live',
+              },
+            },
+          })
+          cb({
+            type: 'assistant',
+            message: {
+              content: [
+                { type: 'tool_use', id: 'tool-live-1', name: 'Read', input: { path: 'README.md' } },
+                { type: 'text', text: 'hello live' },
+              ],
+            },
+          })
+          cb({
+            type: 'result',
+            uuid: 'msg-finished',
+            usage: {
+              input_tokens: 1,
+              output_tokens: 2,
+            },
+          })
+        }
+      },
+      getActivity() {
+        return []
+      },
+    }
+
+    const manager: SessionManagerLike = {
+      async getOrCreate() {
+        return handle
+      },
+    }
+
+    const request = new Request('http://localhost/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Trigger tool',
+        cwd: '/repo',
+      }),
+    })
+
+    const response = await chatRoutes(request, 'http://localhost:5173', manager)
+    const body = await response.text()
+
+    expect(response.status).toBe(200)
+    expect(body.match(/event: tool_start/g)?.length ?? 0).toBe(1)
+    expect(body.match(/hello live/g)?.length ?? 0).toBe(1)
+  })
+
+  test('keeps final assistant messages when ignored partial stream events only contain thinking', async () => {
+    const subscribers = new Set<(event: unknown) => void>()
+    const handle: SessionHandle = {
+      sessionId: '550e8400-e29b-41d4-a716-446655440005',
+      pid: 42,
+      cwd: '/repo',
+      startedAt: Date.parse('2026-04-27T00:00:00.000Z'),
+      child: {} as SessionHandle['child'],
+      done: Promise.resolve('completed' as SessionDoneStatus),
+      kill() {},
+      forceKill() {},
+      async waitForReady() {},
+      writeStdin() {},
+      subscribeEvents(cb) {
+        subscribers.add(cb)
+        return () => subscribers.delete(cb)
+      },
+      async enqueueMessage() {
+        for (const cb of subscribers) {
+          cb({
+            type: 'stream_event',
+            event: {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'thinking_delta',
+                thinking: 'Analyzing…',
+              },
+            },
+          })
+          cb({
+            type: 'assistant',
+            message: {
+              content: [{ type: 'text', text: 'final answer' }],
+            },
+          })
+          cb({
+            type: 'result',
+            uuid: 'msg-finished',
+            usage: {
+              input_tokens: 1,
+              output_tokens: 2,
+            },
+          })
+        }
+      },
+      getActivity() {
+        return []
+      },
+    }
+
+    const manager: SessionManagerLike = {
+      async getOrCreate() {
+        return handle
+      },
+    }
+
+    const request = new Request('http://localhost/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Need the final answer',
+        cwd: '/repo',
+      }),
+    })
+
+    const response = await chatRoutes(request, 'http://localhost:5173', manager)
+    const body = await response.text()
+
+    expect(response.status).toBe(200)
+    expect(body.match(/event: thinking_delta/g)?.length ?? 0).toBe(1)
+    expect(body).toContain('final answer')
+    expect(body.match(/final answer/g)?.length ?? 0).toBe(1)
   })
 
   test('accepts control responses for active sessions', async () => {

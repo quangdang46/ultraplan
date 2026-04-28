@@ -1,13 +1,13 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, GitBranch, GitPullRequest, Terminal, ArrowRight, X, Pause, Folder, FileText, Command } from "lucide-react";
+import { ArrowUp, GitBranch, X, Pause, Folder, FileText, Command } from "lucide-react";
 import { useStreamContext } from "../../hooks/useStreamContext";
 import { getApiClient } from "../../api/client";
 import type { CommandSuggestion, FileSuggestion, ReplyQuote } from "../../api/types";
 import {
-  escapeRegExp,
-  extractTaggedFiles,
+	escapeRegExp,
+	extractTaggedFiles,
   formatAtInsertion,
   longestCommonPrefix,
   parseTriggerState,
@@ -60,11 +60,21 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
   const [suggestions, setSuggestions] = useState<SuggestionViewItem[]>([]);
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
-  const [suggestionsMeta, setSuggestionsMeta] = useState<{ isPartial?: boolean; capApplied?: boolean }>({});
-  const [gitBranch, setGitBranch] = useState<string>("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const requestSeqRef = useRef(0);
-  const client = getApiClient();
+	const [suggestionsMeta, setSuggestionsMeta] = useState<{ isPartial?: boolean; capApplied?: boolean }>({});
+	const [runtimeState, setRuntimeState] = useState<{
+		gitBranch: string;
+		model: string;
+		permissionMode: string;
+		cwd: string;
+	}>({
+		gitBranch: "",
+		model: "",
+		permissionMode: "",
+		cwd: "",
+	});
+	const inputRef = useRef<HTMLInputElement>(null);
+	const requestSeqRef = useRef(0);
+	const client = getApiClient();
   const { sendMessage, executeSlashCommand, cancelStream, isStreaming } = useStreamContext();
 
   const triggerState = useMemo(() => parseTriggerState(reply, cursorPos), [reply, cursorPos]);
@@ -81,19 +91,29 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
     });
   }, [quote]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const loadState = async () => {
-      try {
-        const state = await client.getState();
-        if (cancelled) return;
-        setGitBranch(state.gitBranch?.trim() || "");
-      } catch {
-        if (cancelled) return;
-        setGitBranch("");
-      }
-    };
-    void loadState();
+	useEffect(() => {
+		let cancelled = false;
+		const loadState = async () => {
+			try {
+				const state = await client.getState();
+				if (cancelled) return;
+				setRuntimeState({
+					gitBranch: state.gitBranch?.trim() || "",
+					model: state.model?.trim() || "",
+					permissionMode: state.permissionMode?.trim() || "",
+					cwd: state.cwd?.trim() || "",
+				});
+			} catch {
+				if (cancelled) return;
+				setRuntimeState({
+					gitBranch: "",
+					model: "",
+					permissionMode: "",
+					cwd: "",
+				});
+			}
+		};
+		void loadState();
     return () => {
       cancelled = true;
     };
@@ -238,23 +258,23 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
   return (
     <div className="border-t border-border-warm bg-parchment px-3.5 pt-[7px] pb-[9px] flex-shrink-0 overflow-visible">
       {/* Top row */}
-      <div className="flex items-center gap-1.5 mb-[7px]">
-        <div className="flex items-center gap-1 bg-warm-sand text-charcoal-warm text-[10.5px] font-mono-claude px-[9px] py-1 rounded-[7px] border border-border-warm flex-1 min-w-0 overflow-hidden">
+      <div className="flex flex-wrap items-center gap-1.5 mb-[7px]">
+        <div
+          title={runtimeState.gitBranch || undefined}
+          className="flex items-center gap-1 bg-warm-sand text-charcoal-warm text-[10.5px] font-mono-claude px-[9px] py-1 rounded-[7px] border border-border-warm max-w-full min-w-0 overflow-hidden"
+        >
           <GitBranch className="w-2.5 h-2.5 flex-shrink-0" />
-          <span className="truncate">{gitBranch || "\u00A0"}</span>
+          <span className="truncate">{runtimeState.gitBranch || "No branch"}</span>
         </div>
-
-        <DkBtn>
-          <GitPullRequest className="w-2.5 h-2.5" />
-          Create PR
-          <span className="text-warm-silver text-xs border-l border-[#4a4846] pl-1.5 ml-px">⋮</span>
-        </DkBtn>
-
-        <DkBtn>
-          <Terminal className="w-2.5 h-2.5" />
-          Open in CLI
-          <ArrowRight className="w-2 h-2" strokeWidth={2.5} />
-        </DkBtn>
+        {runtimeState.model && (
+          <MetaPill label={runtimeState.model} />
+        )}
+        {runtimeState.permissionMode && (
+          <MetaPill label={`mode:${runtimeState.permissionMode}`} />
+        )}
+        {runtimeState.cwd && (
+          <MetaPill label={runtimeState.cwd} title={runtimeState.cwd} />
+        )}
       </div>
 
       {/* Reply quote */}
@@ -436,8 +456,11 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
   );
 };
 
-const DkBtn = ({ children }: { children: React.ReactNode }) => (
-  <button className="bg-dark-surface hover:bg-[#3a3836] text-ivory rounded-[7px] px-[11px] py-[5px] text-[11.5px] font-sans flex items-center gap-1.5 whitespace-nowrap shadow-[0_0_0_1px_#3a3836] transition-colors">
-    {children}
-  </button>
+const MetaPill = ({ label, title }: { label: string; title?: string }) => (
+  <div
+    title={title}
+    className="max-w-full rounded-[7px] border border-border-warm bg-white px-[9px] py-1 text-[10.5px] text-stone-gray"
+  >
+    <span className="block truncate">{label}</span>
+  </div>
 );

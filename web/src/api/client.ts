@@ -19,7 +19,24 @@ import type {
   Session,
 } from './types';
 
-const DEFAULT_BASE_URL = 'http://localhost:8080';
+function getDefaultBaseUrl(): string {
+  const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL;
+  if (configuredBaseUrl) {
+    return configuredBaseUrl;
+  }
+
+  if (typeof window === 'undefined') {
+    return 'http://localhost:8080';
+  }
+
+  if (import.meta.env.DEV) {
+    return '';
+  }
+
+  return `${window.location.protocol}//${window.location.hostname}:8080`;
+}
+
+const DEFAULT_BASE_URL = getDefaultBaseUrl();
 
 export class ApiClientError extends Error {
   code: string;

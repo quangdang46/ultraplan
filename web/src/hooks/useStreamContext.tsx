@@ -15,6 +15,8 @@ interface StreamContextValue {
   cancelStream: ReturnType<typeof useStream>['cancelStream'];
   clearMessages: ReturnType<typeof useStream>['clearMessages'];
   loadMessages: ReturnType<typeof useStream>['loadMessages'];
+  pendingRouteSync: ReturnType<typeof useStream>['pendingRouteSync'];
+  acknowledgeRouteSync: ReturnType<typeof useStream>['acknowledgeRouteSync'];
 }
 
 const StreamContext = createContext<StreamContextValue | null>(null);

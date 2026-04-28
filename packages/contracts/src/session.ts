@@ -1,9 +1,13 @@
+import type { ContentBlock, ReplyQuote } from './chat'
+
 export type SessionStatus = 'active' | 'archived' | 'error'
 
 export interface SessionMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: string
+  blocks?: ContentBlock[]
+  quote?: ReplyQuote
 }
 
 export interface Session {

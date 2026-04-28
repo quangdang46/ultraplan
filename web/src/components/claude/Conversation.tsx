@@ -7,6 +7,7 @@ import { ThinkingIndicator } from './ThinkingIndicator';
 
 export function Conversation() {
   const {
+    sessionId,
     messages,
     isStreaming,
     error: streamError,
@@ -24,7 +25,9 @@ export function Conversation() {
 
         {messages.length === 0 && (
           <div className="text-charcoal-warm text-center p-8">
-            Send a message to start a conversation
+            {sessionId
+              ? "This session has no visible transcript yet."
+              : "Type in the composer below to start a new session."}
           </div>
         )}
 
@@ -38,6 +41,17 @@ export function Conversation() {
                 msg.toolCalls.map((tool) => (
                   <ConversationToolItem key={tool.id} item={tool} />
                 ))}
+
+              {msg.role === 'assistant' && msg.thinking && (
+                <div className="rounded-lg border border-[#eadfd6] bg-[#f8f2ed] px-3 py-2 text-charcoal-warm">
+                  <div className="mb-1 text-[10.5px] font-semibold tracking-wide text-[#8c6a5b]">
+                    Thinking
+                  </div>
+                  <div className="text-xs leading-[1.55] [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_code]:whitespace-pre-wrap [&_code]:break-words">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.thinking}</ReactMarkdown>
+                  </div>
+                </div>
+              )}
 
               {msg.role === 'user' && msg.quote?.text && (
                 <div className="rounded-lg border border-[#f5d4c4] bg-[#fff8f5] px-3 py-2 text-charcoal-warm">
@@ -60,7 +74,7 @@ export function Conversation() {
                 >
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                 </div>
-              ) : isStreaming && msg.role === 'assistant' ? (
+              ) : isStreaming && msg.role === 'assistant' && !msg.thinking ? (
                 <ThinkingIndicator />
               ) : null}
             </div>

@@ -25,12 +25,15 @@ export interface UsageStats {
 }
 
 export interface ContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result'
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result'
   text?: string
+  thinking?: string
   id?: string
   name?: string
   input?: Record<string, unknown>
   content?: string
+  tool_use_id?: string
+  is_error?: boolean
 }
 
 export type ServerEvent =
@@ -38,6 +41,10 @@ export type ServerEvent =
   | { type: 'session_ended'; data: { sessionId: string; reason: 'completed' | 'killed' | 'error' } }
   | { type: 'message_start'; data: { id: string } }
   | { type: 'content_delta'; data: { delta: { type: 'text_delta'; text: string } } }
+  | {
+      type: 'thinking_delta'
+      data: { delta: { type: 'thinking_delta'; thinking: string } }
+    }
   | { type: 'content_block'; data: { block: ContentBlock } }
   | { type: 'message_end'; data: { id: string; usage: UsageStats } }
   | { type: 'tool_start'; data: { id: string; name: string; input: Record<string, unknown> } }

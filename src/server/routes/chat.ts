@@ -98,10 +98,96 @@ function mapUsage(parsed: Record<string, unknown>) {
   }
 }
 
+function mapStreamEventToServerEvents(parsed: Record<string, unknown>): ServerEvent[] {
+  const rawEvent =
+    parsed.event && typeof parsed.event === 'object'
+      ? (parsed.event as Record<string, unknown>)
+      : null
+  if (!rawEvent || typeof rawEvent.type !== 'string') {
+    return []
+  }
+
+  switch (rawEvent.type) {
+    case 'content_block_start': {
+      const block =
+        rawEvent.content_block && typeof rawEvent.content_block === 'object'
+          ? (rawEvent.content_block as Record<string, unknown>)
+          : null
+      if (!block || typeof block.type !== 'string') {
+        return []
+      }
+
+      if (
+        block.type === 'tool_use' &&
+        typeof block.id === 'string' &&
+        typeof block.name === 'string'
+      ) {
+        return [{
+          type: 'tool_start',
+          data: {
+            id: block.id,
+            name: block.name,
+            input:
+              block.input && typeof block.input === 'object'
+                ? (block.input as Record<string, unknown>)
+                : {},
+          },
+        }]
+      }
+
+      return []
+    }
+    case 'content_block_delta': {
+      const delta =
+        rawEvent.delta && typeof rawEvent.delta === 'object'
+          ? (rawEvent.delta as Record<string, unknown>)
+          : null
+      if (!delta || typeof delta.type !== 'string') {
+        return []
+      }
+
+      if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+        return [{
+          type: 'content_delta',
+          data: {
+            delta: {
+              type: 'text_delta',
+              text: delta.text,
+            },
+          },
+        }]
+      }
+
+      if (
+        delta.type === 'thinking_delta' &&
+        typeof delta.thinking === 'string'
+      ) {
+        return [{
+          type: 'thinking_delta',
+          data: {
+            delta: {
+              type: 'thinking_delta',
+              thinking: delta.thinking,
+            },
+          },
+        }]
+      }
+
+      return []
+    }
+    default:
+      return []
+  }
+}
+
 export function mapSubprocessEventToServerEvents(
   parsed: Record<string, unknown>,
 ): ServerEvent[] {
   const type = parsed.type as string
+
+  if (type === 'stream_event') {
+    return mapStreamEventToServerEvents(parsed)
+  }
 
   if (type === 'assistant' || type === 'user' || type === 'partial_assistant') {
     const message =
@@ -122,6 +208,23 @@ export function mapSubprocessEventToServerEvents(
         events.push({
           type: 'content_delta',
           data: { delta: { type: 'text_delta', text: block.text } },
+        })
+        continue
+      }
+
+      if (
+        block.type === 'thinking' &&
+        typeof block.thinking === 'string' &&
+        type !== 'user'
+      ) {
+        events.push({
+          type: 'thinking_delta',
+          data: {
+            delta: {
+              type: 'thinking_delta',
+              thinking: block.thinking,
+            },
+          },
         })
         continue
       }
@@ -266,6 +369,73 @@ export function mapSubprocessEventToServerEvents(
   }
 }
 
+function createServerEventForwarder(send: (event: ServerEvent) => void) {
+  let sawRenderableAssistantPartial = false
+  let sawThinkingAssistantPartial = false
+
+  return (parsedRaw: unknown) => {
+    const parsed =
+      parsedRaw && typeof parsedRaw === 'object'
+        ? (parsedRaw as Record<string, unknown>)
+        : null
+    if (!parsed || typeof parsed.type !== 'string') {
+      return
+    }
+
+    if (parsed.type === 'stream_event') {
+      const forwardedEvents = mapSubprocessEventToServerEvents(parsed)
+      if (forwardedEvents.some((event) => event.type === 'thinking_delta')) {
+        sawThinkingAssistantPartial = true
+      }
+      if (
+        forwardedEvents.some(
+          (event) => event.type !== 'thinking_delta',
+        )
+      ) {
+        sawRenderableAssistantPartial = true
+      }
+      for (const event of forwardedEvents) {
+        send(event)
+      }
+      return
+    }
+
+    if (
+      (parsed.type === 'assistant' || parsed.type === 'partial_assistant') &&
+      sawRenderableAssistantPartial
+    ) {
+      sawRenderableAssistantPartial = false
+      sawThinkingAssistantPartial = false
+      return
+    }
+
+    if (parsed.type === 'assistant' || parsed.type === 'partial_assistant') {
+      const filteredEvents = mapSubprocessEventToServerEvents(parsed).filter(
+        (event) =>
+          !(
+            sawThinkingAssistantPartial &&
+            event.type === 'thinking_delta'
+          ),
+      )
+      sawRenderableAssistantPartial = false
+      sawThinkingAssistantPartial = false
+      for (const event of filteredEvents) {
+        send(event)
+      }
+      return
+    }
+
+    if (parsed.type === 'result' || parsed.type === 'error') {
+      sawRenderableAssistantPartial = false
+      sawThinkingAssistantPartial = false
+    }
+
+    for (const event of mapSubprocessEventToServerEvents(parsed)) {
+      send(event)
+    }
+  }
+}
+
 function buildControlResponsePayload(body: Record<string, unknown>): string | null {
   const requestId =
     typeof body.requestId === 'string'
@@ -364,13 +534,7 @@ export async function chatRoutes(
           },
         })
 
-        const unsubscribe = handle.subscribeEvents((parsed: unknown) => {
-          for (const event of mapSubprocessEventToServerEvents(
-            parsed as Record<string, unknown>,
-          )) {
-            send(event)
-          }
-        })
+        const unsubscribe = handle.subscribeEvents(createServerEventForwarder(send))
 
         const close = () => {
           unsubscribe()
@@ -459,10 +623,7 @@ export async function chatRoutes(
         }
       }
 
-      const unsubscribe = handle.subscribeEvents((parsed: unknown) => {
-        for (const event of mapSubprocessEventToServerEvents(
-          parsed as Record<string, unknown>,
-        )) {
+      const unsubscribe = handle.subscribeEvents(createServerEventForwarder((event) => {
           if (event.type === 'content_delta') {
             void manager.beginAssistantMessage?.(handle.sessionId, handle.cwd)
             void manager.appendAssistantMessage?.(
@@ -501,8 +662,7 @@ export async function chatRoutes(
             turnCompleted = true
           }
           send(event)
-        }
-      })
+      }))
 
       send({
         type: 'session_created',
@@ -522,6 +682,8 @@ export async function chatRoutes(
         {
           role: 'user',
           content: userMessage,
+          blocks: [{ type: 'text', text: userMessage }],
+          ...(quote ? { quote } : {}),
           timestamp: new Date().toISOString(),
         },
         handle.cwd,

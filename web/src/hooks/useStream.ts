@@ -70,6 +70,7 @@ function toPendingPermission(requestId: string, request: unknown): PendingPermis
     toolName,
     toolInput,
     description,
+    subtype: typeof record.subtype === 'string' ? record.subtype : undefined,
   };
 }
 
@@ -81,6 +82,7 @@ export function useStream() {
     activeTools: new Map(),
     pendingPermissions: [],
     error: null,
+    pendingRouteSync: false,
   });
 
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -129,6 +131,32 @@ export function useStream() {
             messages[messages.length - 1] = {
               ...lastMsg,
               content: `${lastMsg.content}${textDelta}`,
+            };
+          }
+          return { ...s, isStreaming: true, messages };
+        });
+        break;
+      }
+
+      case 'thinking_delta': {
+        const thinkingDelta = event.data.delta?.thinking || '';
+        if (!thinkingDelta) break;
+
+        setState((s) => {
+          const messages = [...s.messages];
+          const lastMsg = messages[messages.length - 1];
+          if (!lastMsg || lastMsg.role !== 'assistant') {
+            messages.push({
+              id: `assistant_thinking_${Date.now()}`,
+              role: 'assistant',
+              content: '',
+              thinking: thinkingDelta,
+              toolCalls: [],
+            });
+          } else {
+            messages[messages.length - 1] = {
+              ...lastMsg,
+              thinking: `${lastMsg.thinking ?? ''}${thinkingDelta}`,
             };
           }
           return { ...s, isStreaming: true, messages };
@@ -322,10 +350,10 @@ export function useStream() {
       };
 
       const assistantPlaceholder: Message = {
-        id: `assistant_placeholder_${Date.now()}`,
-        role: 'assistant',
-        content: '',
-        toolCalls: [],
+              id: `assistant_placeholder_${Date.now()}`,
+              role: 'assistant',
+              content: '',
+              toolCalls: [],
       };
 
       setState((s) => ({
@@ -333,6 +361,7 @@ export function useStream() {
         sessionId: sessionId ?? s.sessionId,
         isStreaming: true,
         error: null,
+        pendingRouteSync: !sessionId,
         messages: [...s.messages, userMessage, assistantPlaceholder],
       }));
 
@@ -356,6 +385,8 @@ export function useStream() {
             ...s,
             isStreaming: false,
             error,
+            pendingRouteSync:
+              s.pendingRouteSync && s.sessionId === null ? false : s.pendingRouteSync,
           }));
           return false;
         }
@@ -393,7 +424,14 @@ export function useStream() {
   );
 
   const respondToPermission = useCallback(
-    async (requestId: string, approved: boolean): Promise<void> => {
+    async (
+      requestId: string,
+      approved: boolean,
+      options?: {
+        updatedInput?: Record<string, unknown>;
+        message?: string;
+      },
+    ): Promise<void> => {
       if (!state.sessionId) {
         throw new Error('No active session available for permission response');
       }
@@ -403,6 +441,8 @@ export function useStream() {
         sessionId: state.sessionId,
         request_id: requestId,
         approved,
+        ...(options?.updatedInput ? { updatedInput: options.updatedInput } : {}),
+        ...(options?.message ? { message: options.message } : {}),
       });
 
       setState((s) => ({
@@ -435,9 +475,12 @@ export function useStream() {
     attachControllerRef.current?.abort();
   }, []);
 
-  const clearMessages = useCallback(() => {
+  const clearMessages = useCallback((sessionId: string | null = null) => {
     setState((s) => ({
       ...s,
+      sessionId,
+      isStreaming: false,
+      pendingRouteSync: false,
       messages: [],
       activeTools: new Map(),
       pendingPermissions: [],
@@ -445,15 +488,27 @@ export function useStream() {
     }));
   }, []);
 
-  const loadMessages = useCallback((messages: Message[]) => {
+  const loadMessages = useCallback((messages: Message[], sessionId?: string | null) => {
     setState((s) => ({
       ...s,
+      sessionId: sessionId ?? s.sessionId,
+      pendingRouteSync: false,
       messages,
       activeTools: new Map(),
       pendingPermissions: [],
       error: null,
       isStreaming: false,
     }));
+  }, []);
+
+  const acknowledgeRouteSync = useCallback(() => {
+    setState((s) => {
+      if (!s.pendingRouteSync) return s;
+      return {
+        ...s,
+        pendingRouteSync: false,
+      };
+    });
   }, []);
 
   return {
@@ -466,5 +521,6 @@ export function useStream() {
     cancelStream,
     clearMessages,
     loadMessages,
+    acknowledgeRouteSync,
   };
 }

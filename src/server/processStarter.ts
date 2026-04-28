@@ -12,6 +12,7 @@ export function spawnSessionProcess(
   const args = [
     '--print',
     '--verbose',
+    '--include-partial-messages',
     ...(opts.resume ? ['--resume', sessionId] : ['--session-id', sessionId]),
     '--input-format', 'stream-json',
     '--output-format', 'stream-json',
