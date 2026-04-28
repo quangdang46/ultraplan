@@ -370,8 +370,15 @@ export function mapSubprocessEventToServerEvents(
 }
 
 function createServerEventForwarder(send: (event: ServerEvent) => void) {
-  let sawRenderableAssistantPartial = false
+  let sawTextAssistantPartial = false
   let sawThinkingAssistantPartial = false
+  const streamedToolIds = new Set<string>()
+
+  const resetPartialState = () => {
+    sawTextAssistantPartial = false
+    sawThinkingAssistantPartial = false
+    streamedToolIds.clear()
+  }
 
   return (parsedRaw: unknown) => {
     const parsed =
@@ -384,28 +391,23 @@ function createServerEventForwarder(send: (event: ServerEvent) => void) {
 
     if (parsed.type === 'stream_event') {
       const forwardedEvents = mapSubprocessEventToServerEvents(parsed)
-      if (forwardedEvents.some((event) => event.type === 'thinking_delta')) {
-        sawThinkingAssistantPartial = true
-      }
-      if (
-        forwardedEvents.some(
-          (event) => event.type !== 'thinking_delta',
-        )
-      ) {
-        sawRenderableAssistantPartial = true
+      for (const event of forwardedEvents) {
+        if (event.type === 'thinking_delta') {
+          sawThinkingAssistantPartial = true
+        } else if (event.type === 'content_delta') {
+          sawTextAssistantPartial = true
+        } else if (event.type === 'tool_start') {
+          streamedToolIds.add(event.data.id)
+        } else if (event.type === 'tool_result') {
+          const toolId = event.data.toolCallId ?? event.data.id ?? ''
+          if (toolId) {
+            streamedToolIds.add(toolId)
+          }
+        }
       }
       for (const event of forwardedEvents) {
         send(event)
       }
-      return
-    }
-
-    if (
-      (parsed.type === 'assistant' || parsed.type === 'partial_assistant') &&
-      sawRenderableAssistantPartial
-    ) {
-      sawRenderableAssistantPartial = false
-      sawThinkingAssistantPartial = false
       return
     }
 
@@ -415,10 +417,21 @@ function createServerEventForwarder(send: (event: ServerEvent) => void) {
           !(
             sawThinkingAssistantPartial &&
             event.type === 'thinking_delta'
+          ) &&
+          !(
+            sawTextAssistantPartial &&
+            event.type === 'content_delta'
+          ) &&
+          !(
+            (event.type === 'tool_start' || event.type === 'tool_result') &&
+            streamedToolIds.has(
+              event.type === 'tool_start'
+                ? event.data.id
+                : event.data.toolCallId ?? event.data.id ?? '',
+            )
           ),
       )
-      sawRenderableAssistantPartial = false
-      sawThinkingAssistantPartial = false
+      resetPartialState()
       for (const event of filteredEvents) {
         send(event)
       }
@@ -426,8 +439,7 @@ function createServerEventForwarder(send: (event: ServerEvent) => void) {
     }
 
     if (parsed.type === 'result' || parsed.type === 'error') {
-      sawRenderableAssistantPartial = false
-      sawThinkingAssistantPartial = false
+      resetPartialState()
     }
 
     for (const event of mapSubprocessEventToServerEvents(parsed)) {
