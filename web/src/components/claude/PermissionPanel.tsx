@@ -22,6 +22,11 @@ type Props = {
   ) => void | Promise<void>;
 };
 
+type PlanPromptRequest = {
+  tool: string;
+  prompt: string;
+};
+
 function summarizeInput(input: Record<string, unknown>): string | null {
   const serialized = JSON.stringify(input);
   if (!serialized || serialized === "{}") return null;
@@ -286,9 +291,29 @@ function ExitPlanRequestCard({
   request: PendingPermission;
   onRespond: Props["onRespond"];
 }) {
-  const [feedback, setFeedback] = useState("");
-  const plan =
+  const originalPlan =
     typeof request.toolInput.plan === "string" ? request.toolInput.plan : "";
+  const planFilePath =
+    typeof request.toolInput.planFilePath === "string"
+      ? request.toolInput.planFilePath
+      : "";
+  const allowedPrompts = useMemo(
+    () =>
+      Array.isArray(request.toolInput.allowedPrompts)
+        ? request.toolInput.allowedPrompts.filter(
+            (item): item is PlanPromptRequest =>
+              Boolean(item) &&
+              typeof item === "object" &&
+              typeof (item as { tool?: unknown }).tool === "string" &&
+              typeof (item as { prompt?: unknown }).prompt === "string",
+          )
+        : [],
+    [request.toolInput.allowedPrompts],
+  );
+  const [editablePlan, setEditablePlan] = useState(originalPlan);
+  const [feedback, setFeedback] = useState("");
+  const trimmedPlan = editablePlan.trim();
+  const wasEdited = editablePlan !== originalPlan;
 
   return (
     <div className="rounded-xl border border-[#efcfad] bg-[#fff8ee] px-4 py-3 text-near-black">
@@ -304,25 +329,86 @@ function ExitPlanRequestCard({
           <div className="mt-1 text-xs leading-5 text-charcoal-warm">
             {request.description || "Claude is asking for approval before leaving plan mode."}
           </div>
-          {plan && (
-            <div className="mt-3 rounded-xl border border-[#ead4ba] bg-white/80 px-3 py-2 text-sm">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
+          {planFilePath && (
+            <div className="mt-3 rounded-lg border border-[#ead4ba] bg-white/80 px-3 py-2 text-[11px] text-charcoal-warm">
+              Plan file: <span className="font-mono">{planFilePath}</span>
             </div>
           )}
-          <textarea
-            value={feedback}
-            onChange={(event) => setFeedback(event.target.value)}
-            placeholder="Optional feedback if you want Claude to revise the plan..."
-            rows={4}
-            className="mt-3 w-full rounded-lg border border-[#dfc29d] bg-white px-3 py-2 text-sm outline-none focus:border-terracotta"
-          />
+          {allowedPrompts.length > 0 && (
+            <div className="mt-3 rounded-xl border border-[#ead4ba] bg-white/80 px-3 py-2 text-sm">
+              <div className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]">
+                Requested execution permissions
+              </div>
+              <div className="mt-2 space-y-1.5 text-xs text-charcoal-warm">
+                {allowedPrompts.map((item) => (
+                  <div
+                    key={`${item.tool}:${item.prompt}`}
+                    className="rounded-lg bg-[#fdf7ee] px-2.5 py-2"
+                  >
+                    <span className="font-medium text-near-black">{item.tool}</span>
+                    <span className="text-stone-gray"> · </span>
+                    <span>{item.prompt}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="mt-3">
+            <label
+              htmlFor={`plan-editor-${request.requestId}`}
+              className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]"
+            >
+              Plan draft
+            </label>
+            <textarea
+              id={`plan-editor-${request.requestId}`}
+              aria-label="Plan draft"
+              value={editablePlan}
+              onChange={(event) => setEditablePlan(event.target.value)}
+              placeholder="Edit the plan before approving if needed..."
+              rows={10}
+              className="mt-2 w-full rounded-lg border border-[#dfc29d] bg-white px-3 py-2 font-mono text-[12px] leading-5 outline-none focus:border-terracotta"
+            />
+            <div className="mt-2 text-[11px] text-stone-gray">
+              Approving will send this exact plan back to Claude for implementation.
+              {wasEdited ? " Edited locally in web." : ""}
+            </div>
+          </div>
+          {trimmedPlan && (
+            <div className="mt-3 rounded-xl border border-[#ead4ba] bg-white/80 px-3 py-2 text-sm">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]">
+                Preview
+              </div>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{trimmedPlan}</ReactMarkdown>
+            </div>
+          )}
+          <div className="mt-3">
+            <label
+              htmlFor={`plan-feedback-${request.requestId}`}
+              className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]"
+            >
+              Revision feedback
+            </label>
+            <textarea
+              id={`plan-feedback-${request.requestId}`}
+              aria-label="Revision feedback"
+              value={feedback}
+              onChange={(event) => setFeedback(event.target.value)}
+              placeholder="What should Claude change before trying the plan again?"
+              rows={4}
+              className="mt-2 w-full rounded-lg border border-[#dfc29d] bg-white px-3 py-2 text-sm outline-none focus:border-terracotta"
+            />
+          </div>
 
           <div className="mt-3 flex items-center gap-2">
             <button
               type="button"
               onClick={() =>
                 void onRespond(request.requestId, true, {
-                  updatedInput: request.toolInput,
+                  updatedInput: {
+                    ...request.toolInput,
+                    ...(trimmedPlan ? { plan: trimmedPlan } : {}),
+                  },
                 })
               }
               className="inline-flex items-center gap-1.5 rounded-lg bg-terracotta px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-[#c86a4b]"

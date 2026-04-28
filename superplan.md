@@ -33,7 +33,7 @@ A gap is only considered fixed when:
 | `[x]` | Tool result hydration from history | Re-opened sessions drop tool context | Historical tool uses/results show in conversation instead of vanishing |
 | `[x]` | Generic permission UI only | All approvals look the same, even when they are not | Permission surface routes to tool-specific views where needed |
 | `[x]` | Missing ask-user flow | CLI can ask structured questions; web cannot | Ask-user requests can be answered in web and return `updatedInput` |
-| `[~]` | Weak plan approval surface | Plans are treated like generic approvals | Exit-plan approvals show plan content and support approval/revision feedback |
+| `[x]` | Weak plan approval surface | Plans are treated like generic approvals | Exit-plan approvals show plan content and support approval/revision feedback |
 | `[x]` | False affordances in action bar | Buttons imply workflows that do not exist | Non-functional action buttons are removed or made truthful |
 | `[x]` | False affordances in sidebar | Sidebar composer/footer controls are misleading | Sidebar only contains working controls |
 | `[x]` | False affordances in panel header | Caret and static status imply behaviors that are fake | Header shows real state only |
