@@ -27,6 +27,14 @@ export type ToolItem = {
   elapsedMs?: number;
 };
 
+export type TranscriptArtifact = {
+  id: string;
+  type: string;
+  label: string;
+  detail?: string;
+  url?: string;
+};
+
 export type PendingPermission = {
   requestId: string;
   toolName: string;
@@ -41,6 +49,7 @@ export interface Message {
   content: string;
   thinking?: string;
   toolCalls: ToolItem[];
+  artifacts?: TranscriptArtifact[];
   quote?: ReplyQuote;
 }
 

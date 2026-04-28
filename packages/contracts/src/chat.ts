@@ -25,15 +25,20 @@ export interface UsageStats {
 }
 
 export interface ContentBlock {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result'
+  type: string
   text?: string
   thinking?: string
   id?: string
   name?: string
   input?: Record<string, unknown>
-  content?: string
+  content?: unknown
   tool_use_id?: string
   is_error?: boolean
+  summary?: string
+  title?: string
+  url?: string
+  mimeType?: string
+  sourceType?: string
 }
 
 export type ServerEvent =

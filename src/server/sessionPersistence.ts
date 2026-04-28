@@ -185,6 +185,13 @@ function extractBlocks(
       blocks.push({ type: 'thinking', thinking: obj.thinking.trim() })
       continue
     }
+    if (obj.type === 'redacted_thinking') {
+      blocks.push({
+        type: 'redacted_thinking',
+        summary: 'Redacted thinking omitted from transcript',
+      })
+      continue
+    }
     if (obj.type === 'tool_use') {
       blocks.push({
         type: 'tool_use',
@@ -210,10 +217,142 @@ function extractBlocks(
         content,
         is_error: Boolean(obj.is_error),
       })
+      continue
+    }
+
+    const structuredBlock = summarizeStructuredBlock(obj)
+    if (structuredBlock) {
+      blocks.push(structuredBlock)
     }
   }
 
   return blocks
+}
+
+function pickString(
+  value: Record<string, unknown> | undefined,
+  keys: string[],
+): string | undefined {
+  if (!value) return undefined
+  for (const key of keys) {
+    const candidate = value[key]
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim()
+    }
+  }
+  return undefined
+}
+
+function humanizeBlockType(type: string): string {
+  return type
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function summarizeStructuredContentItem(item: Record<string, unknown>): string {
+  const type = typeof item.type === 'string' ? item.type : 'content'
+  const source =
+    item.source && typeof item.source === 'object'
+      ? (item.source as Record<string, unknown>)
+      : undefined
+
+  switch (type) {
+    case 'text':
+      return typeof item.text === 'string' ? item.text.trim() : ''
+    case 'image': {
+      const mimeType = pickString(source, ['media_type', 'mime_type'])
+      return mimeType
+        ? `[Image attachment: ${mimeType}]`
+        : '[Image attachment]'
+    }
+    case 'document': {
+      const title =
+        pickString(source, ['filename']) ||
+        pickString(item, ['title', 'filename', 'name'])
+      return title ? `[Document: ${title}]` : '[Document attachment]'
+    }
+    case 'search_result':
+    case 'web_search_result': {
+      const title = pickString(item, ['title', 'name'])
+      const url = pickString(item, ['url', 'uri'])
+      if (title && url) return `${title} (${url})`
+      if (title) return title
+      if (url) return url
+      return '[Search result]'
+    }
+    case 'web_fetch_result': {
+      const url = pickString(item, ['url', 'uri'])
+      return url ? `Fetched: ${url}` : '[Fetched content]'
+    }
+    case 'redacted_thinking':
+      return '[Redacted thinking]'
+    default: {
+      const preview =
+        pickString(item, ['text', 'title', 'name', 'url', 'uri']) ||
+        pickString(source, ['filename', 'url'])
+      return preview
+        ? `[${humanizeBlockType(type)}: ${preview}]`
+        : `[${humanizeBlockType(type)}]`
+    }
+  }
+}
+
+function summarizeStructuredBlock(
+  obj: Record<string, unknown>,
+): NonNullable<SessionMessage['blocks']>[number] | null {
+  const type = typeof obj.type === 'string' ? obj.type : null
+  if (!type) return null
+  if (['text', 'thinking', 'tool_use', 'tool_result'].includes(type)) {
+    return null
+  }
+
+  const source =
+    obj.source && typeof obj.source === 'object'
+      ? (obj.source as Record<string, unknown>)
+      : undefined
+  const title =
+    pickString(obj, ['title', 'name', 'filename']) ||
+    pickString(source, ['filename'])
+  const url = pickString(obj, ['url', 'uri']) || pickString(source, ['url'])
+  const mimeType =
+    pickString(source, ['media_type', 'mime_type']) ||
+    pickString(obj, ['mimeType', 'mediaType'])
+  const sourceType = pickString(source, ['type'])
+
+  let summary: string | undefined
+  switch (type) {
+    case 'image':
+      summary = 'Image attachment'
+      break
+    case 'document':
+      summary = title ? `Document: ${title}` : 'Document attachment'
+      break
+    case 'search_result':
+    case 'web_search_result':
+      summary =
+        pickString(obj, ['snippet', 'description', 'text']) ||
+        url ||
+        'Search result'
+      break
+    case 'web_fetch_result':
+      summary = url ? `Fetched: ${url}` : 'Fetched content'
+      break
+    case 'container_upload':
+      summary = 'Container upload'
+      break
+    default:
+      summary = summarizeStructuredContentItem(obj)
+      break
+  }
+
+  return {
+    type,
+    ...(summary ? { summary } : {}),
+    ...(title ? { title } : {}),
+    ...(url ? { url } : {}),
+    ...(mimeType ? { mimeType } : {}),
+    ...(sourceType ? { sourceType } : {}),
+  }
 }
 
 function normalizeToolText(raw: unknown): string {
@@ -228,7 +367,8 @@ function normalizeToolText(raw: unknown): string {
         const record = item as Record<string, unknown>
         if (typeof record.text === 'string') return record.text
         if (typeof record.content === 'string') return record.content
-        return ''
+        if (record.content !== undefined) return normalizeToolText(record.content)
+        return summarizeStructuredContentItem(record)
       })
       .filter(Boolean)
       .join('\n')
@@ -239,6 +379,7 @@ function normalizeToolText(raw: unknown): string {
     const record = raw as Record<string, unknown>
     if (typeof record.text === 'string') return record.text.trim()
     if (record.content !== undefined) return normalizeToolText(record.content)
+    return summarizeStructuredContentItem(record)
   }
 
   return String(raw).trim()

@@ -1,6 +1,6 @@
 import type { SessionMessage } from "../../api/types";
 import { toToolResultText } from "./streamParser";
-import type { Message, ToolItem } from "./types";
+import type { Message, ToolItem, TranscriptArtifact } from "./types";
 
 function formatToolTitle(name: string, input: Record<string, unknown>): string {
   const serialized = JSON.stringify(input);
@@ -21,6 +21,77 @@ function buildToolItem(block: NonNullable<SessionMessage["blocks"]>[number]): To
     kind: name,
     status: "done",
     outputLines: [],
+  };
+}
+
+function humanizeBlockType(type: string): string {
+  return type
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function buildArtifact(
+  block: NonNullable<SessionMessage["blocks"]>[number],
+  timestamp: string,
+  messageIndex: number,
+  blockIndex: number,
+): TranscriptArtifact | null {
+  if (["text", "thinking", "tool_use", "tool_result"].includes(block.type)) {
+    return null;
+  }
+
+  const fallbackLabel = humanizeBlockType(block.type);
+  const url = typeof block.url === "string" ? block.url : undefined;
+  const summary =
+    typeof block.summary === "string" && block.summary.trim()
+      ? block.summary.trim()
+      : undefined;
+  const title =
+    typeof block.title === "string" && block.title.trim()
+      ? block.title.trim()
+      : undefined;
+  const mimeType =
+    typeof block.mimeType === "string" && block.mimeType.trim()
+      ? block.mimeType.trim()
+      : undefined;
+  const sourceType =
+    typeof block.sourceType === "string" && block.sourceType.trim()
+      ? block.sourceType.trim()
+      : undefined;
+
+  let label = fallbackLabel;
+  let detail = summary;
+
+  switch (block.type) {
+    case "image":
+      label = title || "Image attachment";
+      detail = [mimeType, sourceType].filter(Boolean).join(" · ") || summary;
+      break;
+    case "document":
+      label = title || "Document attachment";
+      detail = [mimeType, sourceType].filter(Boolean).join(" · ") || summary;
+      break;
+    case "search_result":
+    case "web_search_result":
+      label = title || "Search result";
+      detail = summary || url;
+      break;
+    case "redacted_thinking":
+      label = "Redacted thinking";
+      detail = summary || "Hidden in the archived transcript.";
+      break;
+    default:
+      label = title || fallbackLabel;
+      detail = summary;
+      break;
+  }
+
+  return {
+    id: `history_artifact_${timestamp}_${messageIndex}_${blockIndex}`,
+    type: block.type,
+    label,
+    ...(detail ? { detail } : {}),
+    ...(url ? { url } : {}),
   };
 }
 
@@ -59,6 +130,11 @@ export function hydrateSessionMessages(sessionMessages: SessionMessage[]): Messa
 
   sessionMessages.forEach((sessionMessage, index) => {
     const blocks = sessionMessage.blocks ?? [];
+    const artifacts = blocks
+      .map((block, blockIndex) =>
+        buildArtifact(block, sessionMessage.timestamp, index, blockIndex),
+      )
+      .filter((artifact): artifact is TranscriptArtifact => artifact !== null);
 
     if (sessionMessage.role === "user") {
       const toolResultBlocks = blocks.filter((block) => block.type === "tool_result");
@@ -94,13 +170,14 @@ export function hydrateSessionMessages(sessionMessages: SessionMessage[]): Messa
           .filter(Boolean)
           .join("\n");
 
-      if (!content && !sessionMessage.quote?.text) return;
+      if (!content && !sessionMessage.quote?.text && artifacts.length === 0) return;
 
       hydrated.push({
         id: `history_user_${sessionMessage.timestamp}_${index}`,
         role: "user",
         content,
         toolCalls: [],
+        ...(artifacts.length > 0 ? { artifacts } : {}),
         quote: sessionMessage.quote,
       });
       return;
@@ -123,11 +200,11 @@ export function hydrateSessionMessages(sessionMessages: SessionMessage[]): Messa
       sessionMessage.content ||
       blocks
         .filter((block) => block.type === "text" && typeof block.text === "string")
-        .map((block) => block.text!.trim())
-        .filter(Boolean)
-        .join("\n");
+          .map((block) => block.text!.trim())
+          .filter(Boolean)
+          .join("\n");
 
-    if (!content && !thinking && toolCalls.length === 0) return;
+    if (!content && !thinking && toolCalls.length === 0 && artifacts.length === 0) return;
 
     hydrated.push({
       id: `history_assistant_${sessionMessage.timestamp}_${index}`,
@@ -135,6 +212,7 @@ export function hydrateSessionMessages(sessionMessages: SessionMessage[]): Messa
       content,
       ...(thinking ? { thinking } : {}),
       toolCalls,
+      ...(artifacts.length > 0 ? { artifacts } : {}),
     });
 
     blocks.forEach((block) => {

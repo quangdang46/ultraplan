@@ -29,7 +29,7 @@ A gap is only considered fixed when:
 
 | Status | Gap | Why it matters | Acceptance |
 |---|---|---|---|
-| `[~]` | Transcript fidelity | History currently loses tool and block structure | Session history preserves enough text/tool block structure to reopen sessions without flattening everything to plain text |
+| `[x]` | Transcript fidelity | History currently loses tool and block structure | Session history preserves enough text/tool block structure to reopen sessions without flattening everything to plain text |
 | `[x]` | Tool result hydration from history | Re-opened sessions drop tool context | Historical tool uses/results show in conversation instead of vanishing |
 | `[x]` | Generic permission UI only | All approvals look the same, even when they are not | Permission surface routes to tool-specific views where needed |
 | `[x]` | Missing ask-user flow | CLI can ask structured questions; web cannot | Ask-user requests can be answered in web and return `updatedInput` |
@@ -72,8 +72,8 @@ A gap is only considered fixed when:
 
 ## Remaining Follow-Up Work
 
-- Finish full transcript parity beyond tool history:
-  preserve richer assistant/user block variants instead of only the subset currently reconstructed.
+- Add transcript fidelity polish:
+  inline archived media previews and support more beta/rare content block families beyond the current preserved summaries.
 - Add advanced ask-user parity:
   previews rendered more faithfully, richer annotations, and image attachments.
 - Add deeper plan-mode parity:

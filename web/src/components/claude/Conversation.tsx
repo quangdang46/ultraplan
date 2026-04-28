@@ -64,6 +64,36 @@ export function Conversation() {
                 </div>
               )}
 
+              {msg.artifacts && msg.artifacts.length > 0 && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {msg.artifacts.map((artifact) => (
+                    <div
+                      key={artifact.id}
+                      className="rounded-lg border border-[#e6d7c4] bg-white/70 px-3 py-2 text-charcoal-warm"
+                    >
+                      <div className="text-[10.5px] font-semibold tracking-wide text-[#8c6a5b]">
+                        {artifact.label}
+                      </div>
+                      {artifact.detail && (
+                        <div className="mt-1 text-xs leading-[1.5]">
+                          {artifact.detail}
+                        </div>
+                      )}
+                      {artifact.url && (
+                        <a
+                          href={artifact.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-1 block text-xs text-terracotta underline-offset-2 hover:underline"
+                        >
+                          {artifact.url}
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {msg.content ? (
                 <div
                   className={`rounded-lg p-3 prose prose-sm max-w-none [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_code]:whitespace-pre-wrap [&_code]:break-words ${
