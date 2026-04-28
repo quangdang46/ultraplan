@@ -36,6 +36,13 @@ type SessionRecord = {
   assistantDraft?: SessionMessage
 }
 
+type TurnCompletionReason = 'result' | 'idle' | 'error'
+
+type PendingTurnCompletion = {
+  started: boolean
+  resolve: (reason: TurnCompletionReason) => void
+}
+
 const READY_TIMEOUT_MS = 250
 const STDERR_LINE_LIMIT = 50
 
@@ -80,6 +87,45 @@ function formatFailureMessage(
   return `Claude CLI subprocess exited with code ${code ?? 'unknown'}`
 }
 
+function isSessionStateEvent(
+  parsed: Record<string, unknown>,
+  state: 'idle' | 'running' | 'requires_action',
+): boolean {
+  return (
+    parsed.type === 'system' &&
+    parsed.subtype === 'session_state_changed' &&
+    parsed.state === state
+  )
+}
+
+function marksTurnStarted(parsed: Record<string, unknown>): boolean {
+  if (
+    isSessionStateEvent(parsed, 'running') ||
+    isSessionStateEvent(parsed, 'requires_action')
+  ) {
+    return true
+  }
+
+  switch (parsed.type) {
+    case 'assistant':
+    case 'partial_assistant':
+    case 'stream_event':
+    case 'control_request':
+    case 'tool_use':
+    case 'tool_result':
+    case 'error':
+      return true
+    case 'system':
+      return (
+        parsed.subtype === 'task_started' ||
+        parsed.subtype === 'task_progress' ||
+        parsed.subtype === 'task_notification'
+      )
+    default:
+      return false
+  }
+}
+
 async function findSessionInfo(
   sessionId: string,
 ): Promise<SessionInfo | undefined> {
@@ -118,6 +164,7 @@ class SessionHandleImpl implements SessionHandle {
   private stdoutWatcher: ReturnType<typeof createInterface> | null = null
   private stderrWatcher: ReturnType<typeof createInterface> | null = null
   private readonly stderrLines: string[] = []
+  private pendingTurnCompletion: PendingTurnCompletion | null = null
 
   constructor(sessionId: string, child: ChildProcess, cwd: string) {
     this.sessionId = sessionId
@@ -170,10 +217,9 @@ class SessionHandleImpl implements SessionHandle {
       try {
         const parsed = jsonParse(line)
         if (parsed && typeof parsed === 'object') {
-          this.eventEmitter.emit('event', parsed)
-          if ((parsed as Record<string, unknown>).type === 'result') {
-            this.eventEmitter.emit('result')
-          }
+          const record = parsed as Record<string, unknown>
+          this.eventEmitter.emit('event', record)
+          this.observeTurnCompletion(record)
         }
       } catch {
         // skip non-JSON lines
@@ -215,9 +261,49 @@ class SessionHandleImpl implements SessionHandle {
     return () => this.eventEmitter.off('event', cb)
   }
 
-  private waitForResult(): Promise<void> {
+  private resolvePendingTurnCompletion(
+    reason: TurnCompletionReason,
+  ): void {
+    const pending = this.pendingTurnCompletion
+    if (!pending) return
+
+    this.pendingTurnCompletion = null
+    pending.resolve(reason)
+  }
+
+  private observeTurnCompletion(parsed: Record<string, unknown>): void {
+    if (parsed.type === 'result') {
+      this.resolvePendingTurnCompletion('result')
+      return
+    }
+
+    if (parsed.type === 'error') {
+      this.resolvePendingTurnCompletion('error')
+      return
+    }
+
+    const pending = this.pendingTurnCompletion
+    if (!pending) return
+
+    if (marksTurnStarted(parsed)) {
+      pending.started = true
+    }
+
+    if (pending.started && isSessionStateEvent(parsed, 'idle')) {
+      this.resolvePendingTurnCompletion('idle')
+    }
+  }
+
+  private waitForTurnCompletion(): Promise<TurnCompletionReason> {
+    if (this.pendingTurnCompletion) {
+      throw new Error('Cannot wait for multiple turn completions concurrently')
+    }
+
     return new Promise((resolve) => {
-      this.eventEmitter.once('result', resolve)
+      this.pendingTurnCompletion = {
+        started: false,
+        resolve,
+      }
     })
   }
 
@@ -241,13 +327,17 @@ class SessionHandleImpl implements SessionHandle {
         )
       }
 
-      const waitForResult = this.waitForResult()
+      const waitForTurnCompletion = this.waitForTurnCompletion()
       this.writeStdin(data)
       const outcome = await Promise.race([
-        waitForResult.then(() => 'result' as const),
+        waitForTurnCompletion,
         this.done,
       ])
-      if (outcome !== 'result') {
+      if (
+        outcome !== 'result' &&
+        outcome !== 'idle' &&
+        outcome !== 'error'
+      ) {
         throw new Error(
           formatFailureMessage(
             outcome,
@@ -265,6 +355,18 @@ class SessionHandleImpl implements SessionHandle {
 
   kill(): void {
     if (!this.child.killed) this.child.kill('SIGTERM')
+  }
+
+  interrupt(): void {
+    this.writeStdin(
+      JSON.stringify({
+        type: 'control_request',
+        request_id: crypto.randomUUID(),
+        request: {
+          subtype: 'interrupt',
+        },
+      }),
+    )
   }
 
   forceKill(): void {
@@ -290,6 +392,7 @@ class SessionHandleImpl implements SessionHandle {
       this.stderrWatcher.close()
       this.stderrWatcher = null
     }
+    this.pendingTurnCompletion = null
     this.eventEmitter.removeAllListeners()
   }
 }

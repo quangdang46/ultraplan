@@ -464,12 +464,33 @@ export function useStream() {
     [sendMessage]
   );
 
-  const cancelStream = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      setState((s) => ({ ...s, isStreaming: false }));
+  const cancelStream = useCallback(async () => {
+    const activeSessionId = state.sessionId;
+    if (!activeSessionId) {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        setState((s) => ({ ...s, isStreaming: false, pendingPermissions: [] }));
+      }
+      return;
     }
-  }, []);
+
+    try {
+      await ensureAuthenticated();
+      await client.interruptSession(activeSessionId);
+      setState((s) => ({ ...s, pendingPermissions: [] }));
+    } catch (err) {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      const error = err instanceof Error ? err.message : 'Failed to interrupt session';
+      setState((s) => ({
+        ...s,
+        isStreaming: false,
+        pendingPermissions: [],
+        error,
+      }));
+    }
+  }, [client, ensureAuthenticated, state.sessionId]);
 
   const detachSession = useCallback(() => {
     attachControllerRef.current?.abort();

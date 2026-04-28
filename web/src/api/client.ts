@@ -286,6 +286,13 @@ class ApiClient {
     });
   }
 
+  async interruptSession(sessionId: string): Promise<void> {
+    await this.request<{ success: boolean }>('/api/chat/interrupt', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId }),
+    });
+  }
+
   // Other endpoints
   async getTools(): Promise<ToolsResponse> {
     return this.request<ToolsResponse>('/api/tools');

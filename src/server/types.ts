@@ -79,6 +79,7 @@ export interface SessionHandle {
   startedAt: number
   child: ChildProcess
   done: Promise<SessionDoneStatus>
+  interrupt(): void
   kill(): void
   forceKill(): void
   waitForReady(timeoutMs?: number): Promise<void>

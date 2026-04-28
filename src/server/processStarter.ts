@@ -23,6 +23,9 @@ export function spawnSessionProcess(
     ...opts.env,
     CLAUDE_CODE_SESSION_KIND: 'server',
     CLAUDE_CODE_ENVIRONMENT_KIND: 'server',
+    // Server sessions need the CLI's authoritative idle/running events so
+    // the web transport can detect real turn completion and interrupts.
+    CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
   }
 
   if (opts.permissionMode) {

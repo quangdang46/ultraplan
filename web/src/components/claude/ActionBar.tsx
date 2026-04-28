@@ -252,7 +252,7 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
   };
 
   const handlePause = () => {
-    cancelStream();
+    void cancelStream();
   };
 
   return (

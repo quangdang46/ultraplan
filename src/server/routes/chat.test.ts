@@ -170,6 +170,7 @@ describe('chatRoutes', () => {
       startedAt: Date.parse('2026-04-27T00:00:00.000Z'),
       child: {} as SessionHandle['child'],
       done,
+      interrupt() {},
       kill() {},
       forceKill() {},
       async waitForReady() {},
@@ -284,6 +285,7 @@ describe('chatRoutes', () => {
       startedAt: Date.parse('2026-04-27T00:00:00.000Z'),
       child: {} as SessionHandle['child'],
       done: Promise.resolve('completed' as SessionDoneStatus),
+      interrupt() {},
       kill() {},
       forceKill() {},
       async waitForReady() {},
@@ -374,6 +376,7 @@ describe('chatRoutes', () => {
       startedAt: Date.parse('2026-04-27T00:00:00.000Z'),
       child: {} as SessionHandle['child'],
       done: Promise.resolve('completed' as SessionDoneStatus),
+      interrupt() {},
       kill() {},
       forceKill() {},
       async waitForReady() {},
@@ -449,6 +452,7 @@ describe('chatRoutes', () => {
       startedAt: Date.parse('2026-04-27T00:00:00.000Z'),
       child: {} as SessionHandle['child'],
       done: Promise.resolve('completed' as SessionDoneStatus),
+      interrupt() {},
       kill() {},
       forceKill() {},
       async waitForReady() {},
@@ -529,6 +533,7 @@ describe('chatRoutes', () => {
       startedAt: Date.parse('2026-04-27T00:00:00.000Z'),
       child: {} as SessionHandle['child'],
       done: Promise.resolve('completed' as SessionDoneStatus),
+      interrupt() {},
       kill() {},
       forceKill() {},
       async waitForReady() {},
@@ -583,5 +588,59 @@ describe('chatRoutes', () => {
         },
       },
     })
+  })
+
+  test('interrupts active sessions through the backend control route', async () => {
+    let interrupted = false
+
+    const handle: SessionHandle = {
+      sessionId: '550e8400-e29b-41d4-a716-446655440007',
+      pid: 42,
+      cwd: '/repo',
+      startedAt: Date.parse('2026-04-27T00:00:00.000Z'),
+      child: {} as SessionHandle['child'],
+      done: Promise.resolve('completed' as SessionDoneStatus),
+      interrupt() {
+        interrupted = true
+      },
+      kill() {},
+      forceKill() {},
+      async waitForReady() {},
+      writeStdin() {},
+      subscribeEvents() {
+        return () => {}
+      },
+      async enqueueMessage() {},
+      getActivity() {
+        return []
+      },
+    }
+
+    const manager: SessionManagerLike = {
+      async getOrCreate() {
+        return handle
+      },
+      getSession() {
+        return handle
+      },
+    }
+
+    const request = new Request('http://localhost/api/chat/interrupt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: handle.sessionId,
+      }),
+    })
+
+    const response = await chatRoutes(
+      request,
+      'http://localhost:5173',
+      manager,
+      '/api/chat/interrupt',
+    )
+
+    expect(response.status).toBe(200)
+    expect(interrupted).toBe(true)
   })
 })

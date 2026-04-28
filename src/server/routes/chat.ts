@@ -493,6 +493,29 @@ export async function chatRoutes(
   manager: SessionManagerLike = sessionManager,
   path = new URL(req.url).pathname,
 ): Promise<Response> {
+  if (req.method === 'POST' && path === '/api/chat/interrupt') {
+    const body = await req
+      .json()
+      .catch(() => null) as Record<string, unknown> | null
+    if (!body) {
+      return jsonResponse({ error: 'CHAT_PAYLOAD_MALFORMED' }, 400)
+    }
+
+    const sessionId =
+      typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+    if (!sessionId) {
+      return jsonResponse({ error: 'SESSION_ID_MISSING' }, 400)
+    }
+
+    const handle = manager.getSession?.(sessionId)
+    if (!handle) {
+      return jsonResponse({ error: 'SESSION_NOT_FOUND' }, 404)
+    }
+
+    handle.interrupt()
+    return jsonResponse({ success: true })
+  }
+
   if (req.method === 'POST' && path === '/api/chat/control') {
     const body = await req
       .json()

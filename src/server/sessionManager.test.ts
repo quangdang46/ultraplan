@@ -191,6 +191,83 @@ describe('ProcessSessionManager', () => {
 
     await manager.destroyAll()
   })
+
+  test('treats CLI idle state as turn completion when result is missing', async () => {
+    const manager = new ProcessSessionManager()
+    manager.init({ capacity: 2 })
+
+    const handle = await manager.createSession(
+      '550e8400-e29b-41d4-a716-446655440003',
+      '/repo',
+    )
+    const child = spawnedChildren.at(-1)
+    expect(child).toBeDefined()
+
+    child?.stdin.on('data', () => {
+      queueMicrotask(() => {
+        child.stdout.write(
+          `${JSON.stringify({
+            type: 'system',
+            subtype: 'session_state_changed',
+            state: 'running',
+            session_id: handle.sessionId,
+            uuid: 'state-running',
+          })}\n`,
+        )
+        child.stdout.write(
+          `${JSON.stringify({
+            type: 'assistant',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'partial answer' }],
+            },
+          })}\n`,
+        )
+        child.stdout.write(
+          `${JSON.stringify({
+            type: 'system',
+            subtype: 'session_state_changed',
+            state: 'idle',
+            session_id: handle.sessionId,
+            uuid: 'state-idle',
+          })}\n`,
+        )
+      })
+    })
+
+    await expect(handle.enqueueMessage('{"type":"user"}')).resolves.toBeUndefined()
+
+    await manager.destroyAll()
+  })
+
+  test('interrupt sends the CLI control_request protocol', async () => {
+    const manager = new ProcessSessionManager()
+    manager.init({ capacity: 2 })
+
+    const handle = await manager.createSession(
+      '550e8400-e29b-41d4-a716-446655440004',
+      '/repo',
+    )
+    const child = spawnedChildren.at(-1)
+    expect(child).toBeDefined()
+
+    const writes: string[] = []
+    child?.stdin.on('data', (chunk) => {
+      writes.push(chunk.toString())
+    })
+
+    handle.interrupt()
+
+    expect(writes).toHaveLength(1)
+    expect(JSON.parse(writes[0]!.trim())).toMatchObject({
+      type: 'control_request',
+      request: {
+        subtype: 'interrupt',
+      },
+    })
+
+    await manager.destroyAll()
+  })
 })
 
 afterAll(() => {
