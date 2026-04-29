@@ -1,18 +1,10 @@
 import type { Session, Environment, ControlResponse, SessionEvent } from "../types";
+import { generateMessageUuid } from "../lib/utils";
 
 const BASE = "";
 const UUID_STORAGE_KEY = "rcs_uuid";
 
 let inMemoryUuid: string | null = null;
-
-function generateUuid(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
-    (Number(c) ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (Number(c) / 4)))).toString(16),
-  );
-}
 
 export function getUuid(): string {
   let uuid = inMemoryUuid;
@@ -63,17 +55,9 @@ async function api<T>(method: string, path: string, body?: unknown): Promise<T> 
     headers["Authorization"] = `Bearer ${_activeToken}`;
   }
 
-  // When using Bearer token auth, backend derives UUID from the token — no need to send query param.
-  // Otherwise fall back to UUID auth via query param.
-  let url: string;
-  if (_activeToken) {
-    const sep = path.includes("?") ? "&" : "?";
-    url = `${BASE}${path}${sep}uuid=${encodeURIComponent(_activeToken)}`;
-  } else {
-    const uuid = getUuid();
-    const sep = path.includes("?") ? "&" : "?";
-    url = `${BASE}${path}${sep}uuid=${encodeURIComponent(uuid)}`;
-  }
+  const uuid = getUuid();
+  const sep = path.includes("?") ? "&" : "?";
+  const url = `${BASE}${path}${sep}uuid=${encodeURIComponent(uuid)}`;
   const opts: RequestInit = { method, headers };
   if (body !== undefined) opts.body = JSON.stringify(body);
 
