@@ -138,18 +138,6 @@ async function main(): Promise<void> {
     return
   }
 
-  // Fast-path for `--server` — Local HTTP server for web UI
-  if (feature('BRIDGE_MODE') && args[0] === '--server') {
-    profileCheckpoint('cli_server_path')
-    // Enable config reading before starting server
-    const { enableConfigs } = await import('../utils/config.js')
-    enableConfigs()
-    const port = parseInt(args[1]?.replace('--port=', '') || process.env.CLAUDE_CODE_SERVER_PORT || '8080')
-    const { runServerMode } = await import('../server/serverMain.js')
-    await runServerMode({ port })
-    return
-  }
-
   if (args[0] === 'weixin') {
     profileCheckpoint('cli_weixin_path')
     const { handleWeixinCli } = await import('@claude-code-best/weixin')

@@ -24,6 +24,7 @@ import { getEventBus } from "../../transport/event-bus";
 import { log, error as logError } from "../../logger";
 import { spawn } from "child_process";
 import { subprocessManager } from "../../services/subprocess-manager";
+import { suggestFiles, suggestCommands } from "../../services/suggest/composerService";
 
 const app = new Hono();
 
@@ -371,42 +372,15 @@ app.get("/sessions/:id/stream", uuidAuth, async (c) => {
 app.get("/suggest/files", uuidAuth, async (c) => {
   const q = c.req.query("q") || "";
   const cwd = c.req.query("cwd") || process.cwd();
-  const items: Array<{ path: string; name: string; isDirectory: boolean }> = [];
-
-  try {
-    const { readdirSync, statSync } = await import("fs");
-    const { join, basename } = await import("path");
-    const entries = readdirSync(cwd, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.startsWith(".")) continue;
-      if (!q || entry.name.toLowerCase().includes(q.toLowerCase())) {
-        const fullPath = join(cwd, entry.name);
-        let isDir = false;
-        try { isDir = statSync(fullPath).isDirectory(); } catch { /* ignore */ }
-        items.push({ path: fullPath, name: entry.name, isDirectory: isDir });
-      }
-    }
-  } catch {
-    // ignore fs errors
-  }
-
-  return c.json({ suggestions: { items, isPartial: false } });
+  const suggestions = await suggestFiles(q, cwd);
+  return c.json({ suggestions });
 });
 
 app.get("/suggest/commands", uuidAuth, async (c) => {
-  const query = c.req.query("q") || "";
-  const commands = [
-    { name: "/compact", description: "Summarize conversation to free context" },
-    { name: "/model", description: "Switch model (opus/sonnet/haiku)" },
-    { name: "/export", description: "Export conversation" },
-    { name: "/help", description: "Show help" },
-    { name: "/clear", description: "Clear conversation" },
-    { name: "/memory", description: "Manage memory files" },
-    { name: "/mcp", description: "Manage MCP servers" },
-    { name: "/doctor", description: "Run diagnostics" },
-    { name: "/rewind", description: "Undo last turn" },
-  ].filter((cmd) => !query || cmd.name.includes(query.toLowerCase()));
-  return c.json({ suggestions: commands });
+  const q = c.req.query("q") || "";
+  const cwd = c.req.query("cwd") || process.cwd();
+  const suggestions = await suggestCommands(q, cwd);
+  return c.json({ suggestions });
 });
 
 // ── Command execute ──────────────────────────────────────────────────────────

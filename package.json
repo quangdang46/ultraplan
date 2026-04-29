@@ -45,7 +45,7 @@
     "build:vite": "vite build && bun run scripts/post-build.ts",
     "build:vite:only": "vite build",
     "build:bun": "bun run build.ts",
-    "dev": "bun run scripts/dev.ts --server --port=8080",
+    "dev": "bun run rcs",
     "dev:inspect": "bun run scripts/dev-debug.ts",
     "prepublishOnly": "bun run build:vite",
     "lint": "biome lint src/",
