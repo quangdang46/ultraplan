@@ -26,6 +26,7 @@ import webAuth from "./routes/web/auth";
 import webSessions from "./routes/web/sessions";
 import webControl from "./routes/web/control";
 import webEnvironments from "./routes/web/environments";
+import apiRoutes from "./routes/api/index";
 
 console.log("[RCS] In-memory store ready (no SQLite)");
 
@@ -87,6 +88,16 @@ app.route("/web", webAuth);
 app.route("/web", webSessions);
 app.route("/web", webControl);
 app.route("/web", webEnvironments);
+
+// /api/* aliases — the standalone web UI (web/) calls /api/* endpoints.
+// apiRoutes is mounted first so its session CRUD routes take precedence
+// over webSessions routes (which return different response shapes).
+app.use("/api/*", cors());
+app.route("/api", apiRoutes);
+app.route("/api", webAuth);
+app.route("/api", webSessions);
+app.route("/api", webControl);
+app.route("/api", webEnvironments);
 
 // ACP protocol routes
 console.log("[RCS] ACP support enabled");
