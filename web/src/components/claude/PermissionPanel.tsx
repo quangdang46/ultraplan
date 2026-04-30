@@ -1,7 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useMemo, useState } from "react";
-import { Check, ShieldAlert, X } from "lucide-react";
+import { Check, ShieldAlert, X, Terminal, FileEdit, FileText, Globe, Wrench } from "lucide-react";
 import type {
   AskUserQuestion,
   AskUserQuestionOption,
@@ -11,6 +11,7 @@ import type {
 type RespondOptions = {
   updatedInput?: Record<string, unknown>;
   message?: string;
+  alwaysAllow?: boolean;
 };
 
 type Props = {
@@ -68,6 +69,194 @@ function buildAskUserAnswers(
   };
 }
 
+// ── Tool-specific permission cards ──────────────────────────────────────────
+
+// BashPermissionCard: editable command input
+function BashPermissionCard({ request, onRespond }: { request: PendingPermission; onRespond: Props["onRespond"] }) {
+  const cmd = typeof request.toolInput.command === "string" ? request.toolInput.command : summarizeInput(request.toolInput);
+  const [editCmd, setEditCmd] = useState(cmd ?? "");
+
+  const handleAllow = () => {
+    void onRespond(request.requestId, true, {
+      updatedInput: { command: editCmd },
+    });
+  };
+
+  return (
+    <ToolPermissionCard
+      request={request}
+      icon={<Terminal className="h-4 w-4" />}
+      label="Run shell command"
+      onRespond={onRespond}
+      onAllow={handleAllow}
+    >
+      {cmd && (
+        <textarea
+          className="mt-2 w-full resize-y rounded-lg bg-white/80 px-3 py-2 font-mono text-[11px] leading-5 text-charcoal-warm whitespace-pre-wrap break-words min-h-[60px]"
+          value={editCmd}
+          onChange={(e) => setEditCmd(e.target.value)}
+          rows={Math.max(3, editCmd.split("\n").length)}
+        />
+      )}
+    </ToolPermissionCard>
+  );
+}
+
+// FileEditPermissionCard: editable old_string/new_string
+function FileEditPermissionCard({ request, onRespond }: { request: PendingPermission; onRespond: Props["onRespond"] }) {
+  const path = typeof request.toolInput.file_path === "string" ? request.toolInput.file_path
+    : typeof request.toolInput.path === "string" ? request.toolInput.path : null;
+  const oldStr = typeof request.toolInput.old_string === "string" ? request.toolInput.old_string : null;
+  const newStr = typeof request.toolInput.new_string === "string" ? request.toolInput.new_string : null;
+
+  const [editOldStr, setEditOldStr] = useState(oldStr ?? "");
+  const [editNewStr, setEditNewStr] = useState(newStr ?? "");
+
+  const handleAllow = () => {
+    void onRespond(request.requestId, true, {
+      updatedInput: { old_string: editOldStr, new_string: editNewStr },
+    });
+  };
+
+  return (
+    <ToolPermissionCard
+      request={request}
+      icon={<FileEdit className="h-4 w-4" />}
+      label="Edit file"
+      onRespond={onRespond}
+      onAllow={handleAllow}
+    >
+      {path && <div className="mt-1 font-mono text-[11px] text-stone-gray">{path}</div>}
+      {oldStr && (
+        <div className="mt-2">
+          <div className="mb-1 text-[10px] font-medium text-[#cf222e]">OLD:</div>
+          <textarea
+            className="w-full resize-y rounded-lg bg-[#ffebe9] px-3 py-2 font-mono text-[11px] leading-5 text-[#cf222e] whitespace-pre-wrap break-words min-h-[40px]"
+            value={editOldStr}
+            onChange={(e) => setEditOldStr(e.target.value)}
+            rows={Math.max(2, editOldStr.split("\n").length)}
+          />
+        </div>
+      )}
+      {newStr && (
+        <div className="mt-2">
+          <div className="mb-1 text-[10px] font-medium text-[#1a7f37]">NEW:</div>
+          <textarea
+            className="w-full resize-y rounded-lg bg-[#e6ffed] px-3 py-2 font-mono text-[11px] leading-5 text-[#1a7f37] whitespace-pre-wrap break-words min-h-[40px]"
+            value={editNewStr}
+            onChange={(e) => setEditNewStr(e.target.value)}
+            rows={Math.max(2, editNewStr.split("\n").length)}
+          />
+        </div>
+      )}
+    </ToolPermissionCard>
+  );
+}
+
+function FileWritePermissionCard({ request, onRespond }: { request: PendingPermission; onRespond: Props["onRespond"] }) {
+  const path = typeof request.toolInput.file_path === "string" ? request.toolInput.file_path
+    : typeof request.toolInput.path === "string" ? request.toolInput.path : null;
+  const content = typeof request.toolInput.content === "string" ? request.toolInput.content : null;
+  return (
+    <ToolPermissionCard
+      request={request}
+      icon={<FileText className="h-4 w-4" />}
+      label="Write file"
+      onRespond={onRespond}
+    >
+      {path && <div className="mt-1 font-mono text-[11px] text-stone-gray">{path}</div>}
+      {content && (
+        <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-white/80 px-3 py-2 font-mono text-[11px] leading-5 text-charcoal-warm whitespace-pre-wrap break-words">
+          {content.slice(0, 400)}{content.length > 400 ? "\n…" : ""}
+        </pre>
+      )}
+    </ToolPermissionCard>
+  );
+}
+
+function WebFetchPermissionCard({ request, onRespond }: { request: PendingPermission; onRespond: Props["onRespond"] }) {
+  const url = typeof request.toolInput.url === "string" ? request.toolInput.url : null;
+  const prompt = typeof request.toolInput.prompt === "string" ? request.toolInput.prompt : null;
+  return (
+    <ToolPermissionCard
+      request={request}
+      icon={<Globe className="h-4 w-4" />}
+      label="Fetch URL"
+      onRespond={onRespond}
+    >
+      {url && <div className="mt-1 break-all font-mono text-[11px] text-terracotta">{url}</div>}
+      {prompt && <div className="mt-1 text-[11px] text-stone-gray">{prompt}</div>}
+    </ToolPermissionCard>
+  );
+}
+
+function ToolPermissionCard({
+  request,
+  icon,
+  label,
+  onRespond,
+  onAllow,
+  children,
+}: {
+  request: PendingPermission;
+  icon: React.ReactNode;
+  label: string;
+  onRespond: Props["onRespond"];
+  onAllow?: () => void;
+  children?: React.ReactNode;
+}) {
+  const [alwaysAllow, setAlwaysAllow] = useState(false);
+
+  const handleAllow = onAllow ?? (() => void onRespond(request.requestId, true, { alwaysAllow }));
+
+  return (
+    <div className="rounded-xl border border-[#efcfad] bg-[#fff8ee] px-4 py-3 text-near-black">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-[#f6e3c7] text-[#a15a1d]">
+          {icon}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-[#8f4f1a]">{label}</div>
+          <div className="mt-0.5 font-mono text-[11px] text-charcoal-warm">{request.toolName}</div>
+          {request.description && (
+            <div className="mt-1 text-xs leading-5 text-charcoal-warm">{request.description}</div>
+          )}
+          {children}
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleAllow}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-terracotta px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-[#c86a4b]"
+            >
+              <Check className="h-3.5 w-3.5" />
+              Allow
+            </button>
+            <button
+              type="button"
+              onClick={() => void onRespond(request.requestId, false)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[#dfc29d] bg-white px-3 py-2 text-xs font-medium text-charcoal-warm transition-colors hover:bg-[#fbf2e4]"
+            >
+              <X className="h-3.5 w-3.5" />
+              Deny
+            </button>
+            <label className="ml-auto flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={alwaysAllow}
+                onChange={(e) => setAlwaysAllow(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-[#dfc29d] text-terracotta focus:ring-terracotta"
+              />
+              <span className="text-[11px] text-charcoal-warm">Always allow</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── AskUserQuestion card ─────────────────────────────────────────────────────
+
 function AskUserRequestCard({
   request,
   onRespond,
@@ -86,12 +275,11 @@ function AskUserRequestCard({
 
   if (questions.length === 0) {
     return (
-      <GenericPermissionCard
-        request={request}
-        onApprove={() => void onRespond(request.requestId, true)}
-        onReject={() => void onRespond(request.requestId, false)}
-      />
-    );
+    <GenericPermissionCard
+      request={request}
+      onRespond={onRespond}
+    />
+  );
   }
 
   const currentQuestion = questions[activeQuestion] ?? questions[0];
@@ -105,11 +293,7 @@ function AskUserRequestCard({
     setAnswers((prev) => {
       const existing = prev[question.question];
       if (question.multiSelect) {
-        const current = Array.isArray(existing)
-          ? existing
-          : existing
-            ? [existing]
-            : [];
+        const current = Array.isArray(existing) ? existing : existing ? [existing] : [];
         const next = current.includes(option.label)
           ? current.filter((item) => item !== option.label)
           : [...current, option.label];
@@ -139,15 +323,11 @@ function AskUserRequestCard({
         <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-[#f6e3c7] text-[#a15a1d]">
           <ShieldAlert className="h-4 w-4" />
         </span>
-
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-[#8f4f1a]">
-            Claude needs answers from you
-          </div>
+          <div className="text-sm font-semibold text-[#8f4f1a]">Claude needs answers from you</div>
           <div className="mt-1 text-xs leading-5 text-charcoal-warm">
             {request.description || "Answer the structured questions below so Claude can continue."}
           </div>
-
           {questions.length > 1 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
               {questions.map((question, index) => (
@@ -166,11 +346,8 @@ function AskUserRequestCard({
               ))}
             </div>
           )}
-
           <div className="mt-3 rounded-xl border border-[#ead4ba] bg-white/80 p-3">
-            <div className="text-sm font-medium text-near-black">
-              {currentQuestion.question}
-            </div>
+            <div className="text-sm font-medium text-near-black">{currentQuestion.question}</div>
             <div className="mt-3 space-y-2">
               {currentQuestion.options.map((option) => {
                 const selected = Array.isArray(currentAnswer)
@@ -187,34 +364,23 @@ function AskUserRequestCard({
                         : "border-[#eadfce] bg-white hover:bg-[#faf6ef]"
                     }`}
                   >
-                    <div className="text-sm font-medium text-near-black">
-                      {option.label}
-                    </div>
+                    <div className="text-sm font-medium text-near-black">{option.label}</div>
                     {option.description && (
-                      <div className="mt-0.5 text-xs leading-5 text-charcoal-warm">
-                        {option.description}
-                      </div>
+                      <div className="mt-0.5 text-xs leading-5 text-charcoal-warm">{option.description}</div>
                     )}
                   </button>
                 );
               })}
             </div>
-
             <div className="mt-3 flex gap-2">
               <input
                 type="text"
                 value={customAnswers[currentQuestion.question] || ""}
                 onChange={(event) =>
-                  setCustomAnswers((prev) => ({
-                    ...prev,
-                    [currentQuestion.question]: event.target.value,
-                  }))
+                  setCustomAnswers((prev) => ({ ...prev, [currentQuestion.question]: event.target.value }))
                 }
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    commitCustomAnswer(currentQuestion);
-                  }
+                  if (event.key === "Enter") { event.preventDefault(); commitCustomAnswer(currentQuestion); }
                 }}
                 placeholder="Other answer..."
                 className="min-w-0 flex-1 rounded-lg border border-[#dfc29d] bg-white px-3 py-2 text-sm outline-none focus:border-terracotta"
@@ -227,36 +393,27 @@ function AskUserRequestCard({
                 Use
               </button>
             </div>
-
             <textarea
               value={notes[currentQuestion.question] || ""}
               onChange={(event) =>
-                setNotes((prev) => ({
-                  ...prev,
-                  [currentQuestion.question]: event.target.value,
-                }))
+                setNotes((prev) => ({ ...prev, [currentQuestion.question]: event.target.value }))
               }
               placeholder="Optional note for Claude..."
               rows={3}
               className="mt-3 w-full rounded-lg border border-[#dfc29d] bg-white px-3 py-2 text-sm outline-none focus:border-terracotta"
             />
-
             {selectedPreview && (
               <pre className="mt-3 overflow-x-auto rounded-lg border border-[#eadfce] bg-[#fdfaf4] px-3 py-2 text-[11px] leading-5 text-charcoal-warm whitespace-pre-wrap">
                 {selectedPreview}
               </pre>
             )}
           </div>
-
           <div className="mt-3 flex items-center gap-2">
             <button
               type="button"
               onClick={() =>
                 void onRespond(request.requestId, true, {
-                  updatedInput: {
-                    ...request.toolInput,
-                    ...payload,
-                  },
+                  updatedInput: { ...request.toolInput, ...payload },
                 })
               }
               disabled={!allQuestionsAnswered}
@@ -284,6 +441,8 @@ function AskUserRequestCard({
   );
 }
 
+// ── ExitPlanMode card ────────────────────────────────────────────────────────
+
 function ExitPlanRequestCard({
   request,
   onRespond,
@@ -291,12 +450,8 @@ function ExitPlanRequestCard({
   request: PendingPermission;
   onRespond: Props["onRespond"];
 }) {
-  const originalPlan =
-    typeof request.toolInput.plan === "string" ? request.toolInput.plan : "";
-  const planFilePath =
-    typeof request.toolInput.planFilePath === "string"
-      ? request.toolInput.planFilePath
-      : "";
+  const originalPlan = typeof request.toolInput.plan === "string" ? request.toolInput.plan : "";
+  const planFilePath = typeof request.toolInput.planFilePath === "string" ? request.toolInput.planFilePath : "";
   const allowedPrompts = useMemo(
     () =>
       Array.isArray(request.toolInput.allowedPrompts)
@@ -321,11 +476,8 @@ function ExitPlanRequestCard({
         <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-[#f6e3c7] text-[#a15a1d]">
           <ShieldAlert className="h-4 w-4" />
         </span>
-
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-[#8f4f1a]">
-            Review plan
-          </div>
+          <div className="text-sm font-semibold text-[#8f4f1a]">Review plan</div>
           <div className="mt-1 text-xs leading-5 text-charcoal-warm">
             {request.description || "Claude is asking for approval before leaving plan mode."}
           </div>
@@ -341,10 +493,7 @@ function ExitPlanRequestCard({
               </div>
               <div className="mt-2 space-y-1.5 text-xs text-charcoal-warm">
                 {allowedPrompts.map((item) => (
-                  <div
-                    key={`${item.tool}:${item.prompt}`}
-                    className="rounded-lg bg-[#fdf7ee] px-2.5 py-2"
-                  >
+                  <div key={`${item.tool}:${item.prompt}`} className="rounded-lg bg-[#fdf7ee] px-2.5 py-2">
                     <span className="font-medium text-near-black">{item.tool}</span>
                     <span className="text-stone-gray"> · </span>
                     <span>{item.prompt}</span>
@@ -354,15 +503,10 @@ function ExitPlanRequestCard({
             </div>
           )}
           <div className="mt-3">
-            <label
-              htmlFor={`plan-editor-${request.requestId}`}
-              className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]"
-            >
+            <label className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]">
               Plan draft
             </label>
             <textarea
-              id={`plan-editor-${request.requestId}`}
-              aria-label="Plan draft"
               value={editablePlan}
               onChange={(event) => setEditablePlan(event.target.value)}
               placeholder="Edit the plan before approving if needed..."
@@ -376,22 +520,15 @@ function ExitPlanRequestCard({
           </div>
           {trimmedPlan && (
             <div className="mt-3 rounded-xl border border-[#ead4ba] bg-white/80 px-3 py-2 text-sm">
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]">
-                Preview
-              </div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]">Preview</div>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{trimmedPlan}</ReactMarkdown>
             </div>
           )}
           <div className="mt-3">
-            <label
-              htmlFor={`plan-feedback-${request.requestId}`}
-              className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]"
-            >
+            <label className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]">
               Revision feedback
             </label>
             <textarea
-              id={`plan-feedback-${request.requestId}`}
-              aria-label="Revision feedback"
               value={feedback}
               onChange={(event) => setFeedback(event.target.value)}
               placeholder="What should Claude change before trying the plan again?"
@@ -399,7 +536,6 @@ function ExitPlanRequestCard({
               className="mt-2 w-full rounded-lg border border-[#dfc29d] bg-white px-3 py-2 text-sm outline-none focus:border-terracotta"
             />
           </div>
-
           <div className="mt-3 flex items-center gap-2">
             <button
               type="button"
@@ -435,35 +571,28 @@ function ExitPlanRequestCard({
   );
 }
 
+// ── Generic fallback ─────────────────────────────────────────────────────────
+
 function GenericPermissionCard({
   request,
-  onApprove,
-  onReject,
+  onRespond,
 }: {
   request: PendingPermission;
-  onApprove: () => void;
-  onReject: () => void;
+  onRespond: Props["onRespond"];
 }) {
   const inputSummary = summarizeInput(request.toolInput);
-
+  const [alwaysAllow, setAlwaysAllow] = useState(false);
   return (
     <div className="rounded-xl border border-[#efcfad] bg-[#fff8ee] px-4 py-3 text-near-black">
       <div className="flex items-start gap-3">
         <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-[#f6e3c7] text-[#a15a1d]">
-          <ShieldAlert className="h-4 w-4" />
+          <Wrench className="h-4 w-4" />
         </span>
-
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-[#8f4f1a]">
-            Permission required
-          </div>
-          <div className="mt-1 text-sm font-medium">
-            {request.toolName}
-          </div>
+          <div className="text-sm font-semibold text-[#8f4f1a]">Permission required</div>
+          <div className="mt-1 text-sm font-medium">{request.toolName}</div>
           {request.description && (
-            <div className="mt-1 text-xs leading-5 text-charcoal-warm">
-              {request.description}
-            </div>
+            <div className="mt-1 text-xs leading-5 text-charcoal-warm">{request.description}</div>
           )}
           {inputSummary && (
             <pre className="mt-2 overflow-x-auto rounded-lg bg-white/80 px-3 py-2 text-[11px] leading-5 text-charcoal-warm">
@@ -471,40 +600,62 @@ function GenericPermissionCard({
             </pre>
           )}
         </div>
-
-        <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={onApprove}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-terracotta px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-[#c86a4b]"
-          >
-            <Check className="h-3.5 w-3.5" />
-            Allow
-          </button>
-          <button
-            type="button"
-            onClick={onReject}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-[#dfc29d] bg-white px-3 py-2 text-xs font-medium text-charcoal-warm transition-colors hover:bg-[#fbf2e4]"
-          >
-            <X className="h-3.5 w-3.5" />
-            Deny
-          </button>
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void onRespond(request.requestId, true, { alwaysAllow })}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-terracotta px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-[#c86a4b]"
+            >
+              <Check className="h-3.5 w-3.5" />
+              Allow
+            </button>
+            <button
+              type="button"
+              onClick={() => void onRespond(request.requestId, false)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[#dfc29d] bg-white px-3 py-2 text-xs font-medium text-charcoal-warm transition-colors hover:bg-[#fbf2e4]"
+            >
+              <X className="h-3.5 w-3.5" />
+              Deny
+            </button>
+          </div>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={alwaysAllow}
+              onChange={(e) => setAlwaysAllow(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-[#dfc29d] text-terracotta focus:ring-terracotta"
+            />
+            <span className="text-[11px] text-charcoal-warm">Always allow</span>
+          </label>
         </div>
       </div>
     </div>
   );
 }
 
-function renderRequest(
-  request: PendingPermission,
-  onRespond: Props["onRespond"],
-) {
-  if (request.toolName === "AskUserQuestion") {
+// ── Router ───────────────────────────────────────────────────────────────────
+
+function renderRequest(request: PendingPermission, onRespond: Props["onRespond"]) {
+  const name = request.toolName;
+
+  if (name === "AskUserQuestion") {
     return <AskUserRequestCard request={request} onRespond={onRespond} />;
   }
-
-  if (request.toolName === "ExitPlanMode" || request.toolName === "ExitPlanModeV2") {
+  if (name === "ExitPlanMode" || name === "ExitPlanModeV2") {
     return <ExitPlanRequestCard request={request} onRespond={onRespond} />;
+  }
+  if (name === "Bash" || name === "BashTool") {
+    return <BashPermissionCard request={request} onRespond={onRespond} />;
+  }
+  if (name === "FileEdit" || name === "FileEditTool" || name === "Edit") {
+    return <FileEditPermissionCard request={request} onRespond={onRespond} />;
+  }
+  if (name === "FileWrite" || name === "FileWriteTool" || name === "Write") {
+    return <FileWritePermissionCard request={request} onRespond={onRespond} />;
+  }
+  if (name === "WebFetch" || name === "WebFetchTool" || name === "WebSearch") {
+    return <WebFetchPermissionCard request={request} onRespond={onRespond} />;
   }
 
   return (
@@ -518,7 +669,6 @@ function renderRequest(
 
 export function PermissionPanel({ requests, onRespond }: Props) {
   if (requests.length === 0) return null;
-
   return (
     <div className="space-y-3">
       {requests.map((request) => (

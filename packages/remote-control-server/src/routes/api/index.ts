@@ -16,22 +16,44 @@ import {
   resolveOwnedWebSessionId,
   toWebSessionResponse,
   updateSessionTitle,
+  updateSessionStatus,
   archiveSession,
 } from "../../services/session";
-import { storeBindSession, storeListSessionsByOwnerUuid } from "../../store";
-import { publishSessionEvent } from "../../services/transport";
+import { storeBindSession, storeClearSessionRequiresAction, storeCreateUser, storeGetSessionWorker, storeListPendingPermissions, storeRemovePendingPermission, storeListSessionsByOwnerUuid } from "../../store";
+import { publishSessionEvent, loadPersistedEvents, getLastPersistedSeqNum, hydrateEventBusFromPersistence } from "../../services/transport";
 import { getEventBus } from "../../transport/event-bus";
 import { log, error as logError } from "../../logger";
 import { spawn } from "child_process";
 import { subprocessManager } from "../../services/subprocess-manager";
 import { suggestFiles, suggestCommands } from "../../services/suggest/composerService";
+import { runWithSessionContext, getCurrentSessionContext } from "../../services/session-context";
 
 const app = new Hono();
+
+/**
+ * Helper to wrap route handlers with session context.
+ * Extracts sessionId from route params and resolves it to the internal session ID.
+ */
+function withSessionContext(
+  paramName: string, // e.g., "id" for /sessions/:id
+  handler: (c: import("hono").Context, sessionId: string, uuid: string) => Response | Promise<Response>,
+) {
+  return async (c: import("hono").Context) => {
+    const uuid = c.get("uuid")!;
+    const sessionIdParam = c.req.param(paramName);
+    const sessionId = resolveOwnedWebSessionId(sessionIdParam ?? "", uuid);
+    if (!sessionId) {
+      return c.json({ error: "Session not found or not owned" }, 404);
+    }
+    return runWithSessionContext(sessionId, uuid, () => handler(c, sessionId, uuid));
+  };
+}
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 app.post("/auth/init", async (c) => {
   const uuid = crypto.randomUUID();
+  storeCreateUser(uuid);
   const { token, expires_in } = issueToken(uuid);
   return c.json({
     tempToken: token,
@@ -82,33 +104,48 @@ app.post("/sessions", uuidAuth, async (c) => {
   return c.json({ session: toWebSessionResponse(session) });
 });
 
-app.get("/sessions/:id", uuidAuth, async (c) => {
-  const uuid = c.get("uuid")!;
-  const sessionId = resolveOwnedWebSessionId(c.req.param("id")!, uuid);
-  if (!sessionId) return c.json({ error: "Session not found" }, 404);
+app.get("/sessions/:id", uuidAuth, withSessionContext("id", (c, sessionId) => {
   const session = getSession(sessionId);
-  if (!session) return c.json({ error: "Session not found" }, 404);
-  return c.json(toWebSessionResponse(session));
-});
+  if (!session) return c.json({ error: "SESSION_NOT_FOUND", message: "Session not found" }, 404);
 
-app.patch("/sessions/:id", uuidAuth, async (c) => {
-  const uuid = c.get("uuid")!;
-  const sessionId = resolveOwnedWebSessionId(c.req.param("id")!, uuid);
-  if (!sessionId) return c.json({ error: "Session not found" }, 404);
+  // If session is in DB but subprocess is gone, surface as interrupted
+  const liveStatus = subprocessManager.isRunning(sessionId)
+    ? session.status
+    : session.status === "running"
+      ? "interrupted"
+      : session.status;
+
+  return c.json({ session: toWebSessionResponse({ ...session, status: liveStatus }) });
+}));
+
+app.patch("/sessions/:id", uuidAuth, withSessionContext("id", async (c, sessionId) => {
   const body = await c.req.json().catch(() => ({}));
   if (body.name || body.title) {
     updateSessionTitle(sessionId, body.name || body.title);
   }
   return c.json({ success: true });
-});
+}));
 
-app.delete("/sessions/:id", uuidAuth, async (c) => {
-  const uuid = c.get("uuid")!;
-  const sessionId = resolveOwnedWebSessionId(c.req.param("id")!, uuid);
-  if (!sessionId) return c.json({ error: "Session not found" }, 404);
+app.delete("/sessions/:id", uuidAuth, withSessionContext("id", (c, sessionId) => {
   archiveSession(sessionId);
   return c.json({ success: true });
-});
+}));
+
+// Resume an interrupted session (re-spawn subprocess)
+app.post("/sessions/:id/resume", uuidAuth, withSessionContext("id", async (c, sessionId) => {
+  if (subprocessManager.isRunning(sessionId)) {
+    return c.json({ success: true, status: "already_running" });
+  }
+
+  try {
+    updateSessionStatus(sessionId, "idle");
+    await subprocessManager.getOrSpawn(sessionId, process.cwd());
+    return c.json({ success: true, status: "resumed" });
+  } catch (err) {
+    logError("Failed to resume session", String(err));
+    return c.json({ error: `Failed to resume: ${String(err)}` }, 500);
+  }
+}));
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -184,51 +221,74 @@ app.post("/chat/stream", uuidAuth, async (c) => {
 
   const effectiveCwd = rawCwd || process.cwd();
 
-  // Publish user message to EventBus (for message history)
-  publishSessionEvent(resolvedId, "user", { content: message ?? "", quote }, "inbound");
+  // Run the streaming handler with session context isolation
+  return runWithSessionContext(resolvedId, uuid, async () => {
+    // Subscribe to the EventBus BEFORE spawning the subprocess so we don't
+    // miss early events (session_created, message_start).
+    const bus = getEventBus(resolvedId, getLastPersistedSeqNum(resolvedId));
+    const encoder = new TextEncoder();
+    const earlyEvents: Array<{ type: string; payload: unknown }> = [];
+    let sseController: ReadableStreamDefaultController<Uint8Array> | null = null;
 
-  // Spawn subprocess (no-op if already running), then enqueue the user message
-  try {
-    await subprocessManager.getOrSpawn(resolvedId, effectiveCwd);
-    subprocessManager.enqueueMessage(
-      resolvedId,
-      JSON.stringify({ role: "user", content: message ?? "" }),
-    );
-  } catch (err) {
-    logError("Failed to spawn Claude subprocess", String(err));
-    return c.json({ error: `Failed to start Claude: ${String(err)}` }, 500);
-  }
+    // Collect events that arrive before the SSE controller is ready
+    const unsub = bus.subscribe((event) => {
+      if (event.direction === "inbound") return;
+      const data = JSON.stringify({ type: event.type, data: event.payload });
+      const chunk = encoder.encode(`event: message\ndata: ${data}\n\n`);
 
-  // Return live SSE stream from the outbound EventBus
-  const bus = getEventBus(resolvedId);
-  const encoder = new TextEncoder();
-
-  const stream = new ReadableStream({
-    start(controller) {
-      const unsub = bus.subscribe((event) => {
-        if (event.direction === "inbound") return;
-        const data = JSON.stringify({ type: event.type, data: event.payload });
-        controller.enqueue(encoder.encode(`event: message\ndata: ${data}\n\n`));
-
+      if (sseController) {
+        try { sseController.enqueue(chunk); } catch { /* closed */ }
         if (event.type === "message_end" || event.type === "session_ended") {
-          try { controller.close(); } catch { /* already closed */ }
+          try { sseController.close(); } catch { /* already closed */ }
           unsub();
         }
-      });
+      } else {
+        earlyEvents.push({ type: event.type, payload: event.payload });
+      }
+    });
 
-      c.req.raw.signal.addEventListener("abort", () => {
-        unsub();
-        try { controller.close(); } catch { /* already closed */ }
-      });
-    },
-  });
+    // Publish user message to EventBus (for message history)
+    publishSessionEvent(resolvedId, "user", { content: message ?? "", quote }, "inbound");
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
+    // Spawn subprocess (no-op if already running), then enqueue the user message
+    try {
+      await subprocessManager.getOrSpawn(resolvedId, effectiveCwd);
+      subprocessManager.enqueueMessage(
+        resolvedId,
+        JSON.stringify({ type: "user", message: { role: "user", content: message ?? "" } }),
+      );
+    } catch (err) {
+      unsub();
+      logError("Failed to spawn Claude subprocess", String(err));
+      return c.json({ error: `Failed to start Claude: ${String(err)}` }, 500);
+    }
+
+    // Return live SSE stream from the outbound EventBus
+    const stream = new ReadableStream({
+      start(controller) {
+        sseController = controller;
+
+        // Flush any events that arrived before the controller was ready
+        for (const early of earlyEvents) {
+          const data = JSON.stringify({ type: early.type, data: early.payload });
+          controller.enqueue(encoder.encode(`event: message\ndata: ${data}\n\n`));
+        }
+        earlyEvents.length = 0;
+
+        c.req.raw.signal.addEventListener("abort", () => {
+          unsub();
+          try { controller.close(); } catch { /* already closed */ }
+        });
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
   });
 });
 
@@ -246,24 +306,33 @@ app.post("/chat/control", uuidAuth, async (c) => {
     return c.json({ error: "Session not found or not owned" }, 403);
   }
 
-  // Forward control response to subprocess stdin
-  const controlPayload = JSON.stringify({
-    type: "control_response",
-    request_id: body.request_id,
-    approved: body.approved,
-    updated_input: body.updatedInput,
-    message: body.message,
+  // Run with session context isolation
+  return runWithSessionContext(resolvedId, uuid, async () => {
+    // Forward control response to subprocess stdin
+    const controlPayload = JSON.stringify({
+      type: "control_response",
+      request_id: body.request_id,
+      approved: body.approved,
+      updated_input: body.updatedInput,
+      message: body.message,
+    });
+    subprocessManager.sendControl(resolvedId, controlPayload);
+    storeClearSessionRequiresAction(resolvedId);
+
+    // Remove from pending_permissions table
+    if (body.request_id) {
+      storeRemovePendingPermission(resolvedId, body.request_id);
+    }
+
+    publishSessionEvent(resolvedId, "permission_response", {
+      request_id: body.request_id,
+      approved: body.approved,
+      updated_input: body.updatedInput,
+      message: body.message,
+    }, "inbound");
+
+    return c.json({ success: true });
   });
-  subprocessManager.sendControl(resolvedId, controlPayload);
-
-  publishSessionEvent(resolvedId, "permission_response", {
-    request_id: body.request_id,
-    approved: body.approved,
-    updated_input: body.updatedInput,
-    message: body.message,
-  }, "inbound");
-
-  return c.json({ success: true });
 });
 
 app.post("/chat/interrupt", uuidAuth, async (c) => {
@@ -280,24 +349,27 @@ app.post("/chat/interrupt", uuidAuth, async (c) => {
     return c.json({ error: "Session not found or not owned" }, 403);
   }
 
-  subprocessManager.interrupt(resolvedId);
-  publishSessionEvent(resolvedId, "interrupt", {}, "inbound");
+  // Run with session context isolation
+  return runWithSessionContext(resolvedId, uuid, async () => {
+    subprocessManager.interrupt(resolvedId);
+    publishSessionEvent(resolvedId, "interrupt", {}, "inbound");
 
-  return c.json({ success: true });
+    return c.json({ success: true });
+  });
 });
 
 // ── Session messages ─────────────────────────────────────────────────────────
 
-app.get("/sessions/:id/messages", uuidAuth, async (c) => {
-  const uuid = c.get("uuid")!;
-  const sessionId = c.req.param("id")!;
-  const resolvedId = resolveOwnedWebSessionId(sessionId, uuid);
-  if (!resolvedId) {
-    return c.json({ error: "Session not found" }, 404);
+app.get("/sessions/:id/messages", uuidAuth, withSessionContext("id", (c, sessionId) => {
+  // Try in-memory bus first, fall back to persisted events
+  const bus = getEventBus(sessionId, getLastPersistedSeqNum(sessionId));
+  let events = bus.getEventsSince(0);
+  if (events.length === 0) {
+    events = loadPersistedEvents(sessionId, 0).map((e) => ({
+      ...e,
+      direction: e.direction as "inbound" | "outbound",
+    }));
   }
-
-  const bus = getEventBus(resolvedId);
-  const events = bus.getEventsSince(0);
 
   const messages: Array<{
     id: string;
@@ -319,30 +391,61 @@ app.get("/sessions/:id/messages", uuidAuth, async (c) => {
   }
 
   return c.json({ messages });
-});
+}));
 
 // ── Session stream (SSE with normalized { type, data } shape) ────────────────
 
-app.get("/sessions/:id/stream", uuidAuth, async (c) => {
-  const uuid = c.get("uuid")!;
-  const sessionId = c.req.param("id")!;
-  const resolvedId = resolveOwnedWebSessionId(sessionId, uuid);
-  if (!resolvedId) {
-    return c.json({ error: "Session not found" }, 404);
-  }
-
-  const bus = getEventBus(resolvedId);
+app.get("/sessions/:id/stream", uuidAuth, withSessionContext("id", (c, sessionId) => {
+  hydrateEventBusFromPersistence(sessionId);
+  const bus = getEventBus(sessionId, getLastPersistedSeqNum(sessionId));
   const encoder = new TextEncoder();
   const fromSeqNum = Number(c.req.query("from") || "0");
 
   const stream = new ReadableStream({
     start(controller) {
-      if (fromSeqNum > 0) {
-        const missed = bus.getEventsSince(fromSeqNum);
-        for (const event of missed) {
-          const data = JSON.stringify({ type: event.type, data: event.payload });
-          controller.enqueue(encoder.encode(`id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`));
+      const persisted = loadPersistedEvents(sessionId, fromSeqNum).filter((event) => event.direction !== "inbound");
+      const replayedSeqNums = new Set<number>();
+
+      for (const event of persisted) {
+        replayedSeqNums.add(event.seqNum);
+        const data = JSON.stringify({ type: event.type, data: event.payload });
+        controller.enqueue(encoder.encode(`id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`));
+      }
+
+      const missed = bus
+        .getEventsSince(fromSeqNum)
+        .filter((event) => event.direction !== "inbound" && !replayedSeqNums.has(event.seqNum));
+
+      for (const event of missed) {
+        const data = JSON.stringify({ type: event.type, data: event.payload });
+        controller.enqueue(encoder.encode(`id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`));
+      }
+
+      // Replay pending permissions from pending_permissions table
+      const pendingPermissions = storeListPendingPermissions(sessionId);
+      const persistedRequestIds = new Set(
+        persisted
+          .filter((e) => e.type === "permission_request")
+          .map((e) => (e.payload as Record<string, unknown>)?.request_id as string)
+          .filter(Boolean),
+      );
+      for (const perm of pendingPermissions) {
+        if (!persistedRequestIds.has(perm.requestId)) {
+          const data = JSON.stringify({ type: "permission_request", data: perm.payload });
+          controller.enqueue(encoder.encode(`event: message\ndata: ${data}\n\n`));
         }
+      }
+
+      // Fallback: also check requiresActionDetails for backward compat
+      const worker = storeGetSessionWorker(sessionId);
+      const pendingPermission = worker?.requiresActionDetails;
+      if (
+        pendingPermission &&
+        typeof pendingPermission === "object" &&
+        !persisted.some((event) => event.type === "permission_request" && JSON.stringify(event.payload) === JSON.stringify(pendingPermission))
+      ) {
+        const data = JSON.stringify({ type: "permission_request", data: pendingPermission });
+        controller.enqueue(encoder.encode(`event: message\ndata: ${data}\n\n`));
       }
 
       const unsub = bus.subscribe((event) => {
@@ -353,7 +456,7 @@ app.get("/sessions/:id/stream", uuidAuth, async (c) => {
 
       c.req.raw.signal.addEventListener("abort", () => {
         unsub();
-        try { controller.close(); } catch { /* already closed */ }
+        controller.close();
       });
     },
   });
@@ -365,7 +468,7 @@ app.get("/sessions/:id/stream", uuidAuth, async (c) => {
       Connection: "keep-alive",
     },
   });
-});
+}));
 
 // ── Suggest ──────────────────────────────────────────────────────────────────
 
@@ -398,8 +501,11 @@ app.post("/command/execute", uuidAuth, async (c) => {
     const uuid = c.get("uuid")!;
     const resolvedId = resolveOwnedWebSessionId(sessionId, uuid);
     if (resolvedId) {
-      publishSessionEvent(resolvedId, "user", { content: command }, "inbound");
-      return c.json({ success: true, delegated: true });
+      // Run with session context isolation
+      return runWithSessionContext(resolvedId, uuid, () => {
+        publishSessionEvent(resolvedId, "user", { content: command }, "inbound");
+        return c.json({ success: true, delegated: true });
+      });
     }
   }
 
@@ -416,51 +522,54 @@ app.get("/context", uuidAuth, async (c) => {
   const resolvedId = resolveOwnedWebSessionId(sessionId, uuid);
   if (!resolvedId) return c.json({ error: "Session not found" }, 404);
 
-  const bus = getEventBus(resolvedId);
-  const events = bus.getEventsSince(0);
+  // Run with session context isolation
+  return runWithSessionContext(resolvedId, uuid, () => {
+    const bus = getEventBus(resolvedId, getLastPersistedSeqNum(resolvedId));
+    const events = bus.getEventsSince(0);
 
-  let systemTokens = 0;
-  let userTokens = 0;
-  let assistantTokens = 0;
-  let toolTokens = 0;
-  let totalInput = 0;
-  let totalOutput = 0;
+    let systemTokens = 0;
+    let userTokens = 0;
+    let assistantTokens = 0;
+    let toolTokens = 0;
+    let totalInput = 0;
+    let totalOutput = 0;
 
-  for (const event of events) {
-    const payload = event.payload as Record<string, unknown> | null;
-    if (event.type === "message_end") {
-      const usage = payload?.usage as Record<string, unknown> | undefined;
-      totalInput += Number(usage?.inputTokens ?? usage?.input_tokens ?? 0);
-      totalOutput += Number(usage?.outputTokens ?? usage?.output_tokens ?? 0);
+    for (const event of events) {
+      const payload = event.payload as Record<string, unknown> | null;
+      if (event.type === "message_end") {
+        const usage = payload?.usage as Record<string, unknown> | undefined;
+        totalInput += Number(usage?.inputTokens ?? usage?.input_tokens ?? 0);
+        totalOutput += Number(usage?.outputTokens ?? usage?.output_tokens ?? 0);
+      }
+      if (event.type === "user" || event.type === "user_message") {
+        const content = String(payload?.content ?? payload?.message ?? "");
+        userTokens += Math.ceil(content.length / 4);
+      }
+      if (event.type === "content_delta" || event.type === "content_block") {
+        const text = String((payload?.delta as Record<string, unknown>)?.text ?? (payload?.block as Record<string, unknown>)?.text ?? "");
+        assistantTokens += Math.ceil(text.length / 4);
+      }
+      if (event.type === "tool_result") {
+        const content = String(payload?.content ?? payload?.result ?? "");
+        toolTokens += Math.ceil(content.length / 4);
+      }
     }
-    if (event.type === "user" || event.type === "user_message") {
-      const content = String(payload?.content ?? payload?.message ?? "");
-      userTokens += Math.ceil(content.length / 4);
-    }
-    if (event.type === "content_delta" || event.type === "content_block") {
-      const text = String((payload?.delta as Record<string, unknown>)?.text ?? (payload?.block as Record<string, unknown>)?.text ?? "");
-      assistantTokens += Math.ceil(text.length / 4);
-    }
-    if (event.type === "tool_result") {
-      const content = String(payload?.content ?? payload?.result ?? "");
-      toolTokens += Math.ceil(content.length / 4);
-    }
-  }
 
-  systemTokens = Math.max(0, totalInput - userTokens - toolTokens);
-  const maxTokens = 200000;
+    systemTokens = Math.max(0, totalInput - userTokens - toolTokens);
+    const maxTokens = 200000;
 
-  return c.json({
-    maxTokens,
-    totalInput,
-    totalOutput,
-    breakdown: [
-      { category: "System prompt", tokens: systemTokens, pct: Math.round((systemTokens / maxTokens) * 100) },
-      { category: "User messages", tokens: userTokens, pct: Math.round((userTokens / maxTokens) * 100) },
-      { category: "Assistant", tokens: assistantTokens, pct: Math.round((assistantTokens / maxTokens) * 100) },
-      { category: "Tool results", tokens: toolTokens, pct: Math.round((toolTokens / maxTokens) * 100) },
-    ],
-    usedPct: Math.round((totalInput / maxTokens) * 100),
+    return c.json({
+      maxTokens,
+      totalInput,
+      totalOutput,
+      breakdown: [
+        { category: "System prompt", tokens: systemTokens, pct: Math.round((systemTokens / maxTokens) * 100) },
+        { category: "User messages", tokens: userTokens, pct: Math.round((userTokens / maxTokens) * 100) },
+        { category: "Assistant", tokens: assistantTokens, pct: Math.round((assistantTokens / maxTokens) * 100) },
+        { category: "Tool results", tokens: toolTokens, pct: Math.round((toolTokens / maxTokens) * 100) },
+      ],
+      usedPct: Math.round((totalInput / maxTokens) * 100),
+    });
   });
 });
 
@@ -534,15 +643,10 @@ app.get("/history", uuidAuth, async (c) => {
 
 // ── Rewind ───────────────────────────────────────────────────────────────────
 
-app.post("/sessions/:id/rewind", uuidAuth, async (c) => {
-  const uuid = c.get("uuid")!;
-  const sessionId = c.req.param("id")!;
-  const resolvedId = resolveOwnedWebSessionId(sessionId, uuid);
-  if (!resolvedId) return c.json({ error: "Session not found" }, 404);
-
-  publishSessionEvent(resolvedId, "user", { content: "/rewind" }, "inbound");
+app.post("/sessions/:id/rewind", uuidAuth, withSessionContext("id", (c, sessionId) => {
+  publishSessionEvent(sessionId, "user", { content: "/rewind" }, "inbound");
   return c.json({ success: true });
-});
+}));
 
 // ── Workspace search (ripgrep) ──────────────────────────────────────────────
 
@@ -619,7 +723,9 @@ app.get("/search", uuidAuth, async (c) => {
 
 app.get("/mcp", uuidAuth, async (c) => {
   // Return list of configured MCP servers from settings
-  const cwd = process.cwd();
+  // Accept cwd as query param so the web client can pass the project root,
+  // but fall back to process.cwd() for standalone use
+  const cwd = c.req.query("cwd") || process.cwd();
   try {
     const { readFileSync, existsSync } = await import("fs");
     const { join } = await import("path");
@@ -637,28 +743,29 @@ app.get("/mcp", uuidAuth, async (c) => {
     }));
 
     return c.json({ servers });
-  } catch {
-    return c.json({ servers: [] });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
   }
 });
 
 app.post("/mcp", uuidAuth, async (c) => {
   const body = await c.req.json();
-  const { name, command, args, env } = body as {
+  const { name, command, args, env, cwd: rawCwd } = body as {
     name?: string;
     command?: string;
     args?: string[];
     env?: Record<string, string>;
+    cwd?: string;
   };
 
   if (!name || !command) {
     return c.json({ error: "name and command are required" }, 400);
   }
 
+  const cwd = rawCwd || process.cwd();
   try {
     const { readFileSync, writeFileSync, mkdirSync, existsSync } = await import("fs");
     const { join } = await import("path");
-    const cwd = process.cwd();
     const settingsPath = join(cwd, ".claude", "settings.json");
 
     let settings: Record<string, unknown> = {};
@@ -673,31 +780,32 @@ app.post("/mcp", uuidAuth, async (c) => {
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 
     return c.json({ success: true });
-  } catch {
-    return c.json({ error: "Failed to save MCP server config" }, 500);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
   }
 });
 
 app.delete("/mcp/:name", uuidAuth, async (c) => {
   const name = c.req.param("name");
-  try {
+  // Accept cwd as query param so the web client can pass the project root,
+  // but fall back to process.cwd() for standalone use
+  const cwd = c.req.query("cwd") || process.cwd();
+    try {
     const { readFileSync, writeFileSync, existsSync } = await import("fs");
     const { join } = await import("path");
-    const cwd = process.cwd();
     const settingsPath = join(cwd, ".claude", "settings.json");
 
     if (!existsSync(settingsPath)) return c.json({ error: "Not found" }, 404);
     const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-    const mcpName = c.req.param("name");
-    if (!mcpName || !(settings.mcpServers as Record<string, unknown>)?.[mcpName]) {
+    if (!name || !(settings.mcpServers as Record<string, unknown>)?.[name]) {
       return c.json({ error: "Not found" }, 404);
     }
 
-    delete (settings.mcpServers as Record<string, unknown>)[mcpName];
+    delete (settings.mcpServers as Record<string, unknown>)[name];
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
     return c.json({ success: true });
-  } catch {
-    return c.json({ error: "Failed to delete MCP server" }, 500);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
   }
 });
 

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { db } from "./db";
 
 // ---------- Types ----------
 
@@ -58,42 +59,99 @@ export interface SessionWorkerRecord {
   updatedAt: Date;
 }
 
-// ---------- Stores (in-memory Maps) ----------
+// ---------- Row mappers ----------
 
-const users = new Map<string, UserRecord>();
-const tokenToUser = new Map<string, { username: string; createdAt: Date }>();
-const environments = new Map<string, EnvironmentRecord>();
-const sessions = new Map<string, SessionRecord>();
-const workItems = new Map<string, WorkItemRecord>();
-const sessionWorkers = new Map<string, SessionWorkerRecord>();
+function rowToUser(row: Record<string, unknown>): UserRecord {
+  return {
+    username: row.username as string,
+    createdAt: new Date(row.created_at as string),
+  };
+}
 
-// UUID → session ownership: sessionId → Set of UUIDs
-const sessionOwners = new Map<string, Set<string>>();
+function rowToEnvironment(row: Record<string, unknown>): EnvironmentRecord {
+  return {
+    id: row.id as string,
+    secret: row.secret as string,
+    machineName: (row.machine_name as string | null) ?? null,
+    directory: (row.directory as string | null) ?? null,
+    branch: (row.branch as string | null) ?? null,
+    gitRepoUrl: (row.git_repo_url as string | null) ?? null,
+    maxSessions: row.max_sessions as number,
+    workerType: row.worker_type as string,
+    bridgeId: (row.bridge_id as string | null) ?? null,
+    capabilities: row.capabilities ? JSON.parse(row.capabilities as string) : null,
+    status: row.status as string,
+    username: (row.username as string | null) ?? null,
+    lastPollAt: row.last_poll_at ? new Date(row.last_poll_at as string) : null,
+    createdAt: new Date(row.created_at as string),
+    updatedAt: new Date(row.updated_at as string),
+  };
+}
+
+function rowToSession(row: Record<string, unknown>): SessionRecord {
+  return {
+    id: row.id as string,
+    environmentId: (row.environment_id as string | null) ?? null,
+    title: (row.title as string | null) ?? null,
+    status: row.status as string,
+    source: row.source as string,
+    permissionMode: (row.permission_mode as string | null) ?? null,
+    workerEpoch: row.worker_epoch as number,
+    username: (row.username as string | null) ?? null,
+    createdAt: new Date(row.created_at as string),
+    updatedAt: new Date(row.updated_at as string),
+  };
+}
+
+function rowToSessionWorker(row: Record<string, unknown>): SessionWorkerRecord {
+  return {
+    sessionId: row.session_id as string,
+    workerStatus: (row.worker_status as string | null) ?? null,
+    externalMetadata: row.external_metadata ? JSON.parse(row.external_metadata as string) : null,
+    requiresActionDetails: row.requires_action_details ? JSON.parse(row.requires_action_details as string) : null,
+    lastHeartbeatAt: row.last_heartbeat_at ? new Date(row.last_heartbeat_at as string) : null,
+    createdAt: new Date(row.created_at as string),
+    updatedAt: new Date(row.updated_at as string),
+  };
+}
+
+function rowToWorkItem(row: Record<string, unknown>): WorkItemRecord {
+  return {
+    id: row.id as string,
+    environmentId: row.environment_id as string,
+    sessionId: row.session_id as string,
+    state: row.state as string,
+    secret: row.secret as string,
+    createdAt: new Date(row.created_at as string),
+    updatedAt: new Date(row.updated_at as string),
+  };
+}
 
 // ---------- User ----------
 
 export function storeCreateUser(username: string): UserRecord {
-  const existing = users.get(username);
-  if (existing) return existing;
-  const record: UserRecord = { username, createdAt: new Date() };
-  users.set(username, record);
-  return record;
+  db.prepare("INSERT OR IGNORE INTO users (username) VALUES (?)").run(username);
+  return rowToUser(db.prepare("SELECT * FROM users WHERE username = ?").get(username) as Record<string, unknown>);
 }
 
 export function storeGetUser(username: string): UserRecord | undefined {
-  return users.get(username);
+  const row = db.prepare("SELECT * FROM users WHERE username = ?").get(username) as Record<string, unknown> | undefined;
+  return row ? rowToUser(row) : undefined;
 }
 
 export function storeCreateToken(username: string, token: string): void {
-  tokenToUser.set(token, { username, createdAt: new Date() });
+  db.prepare("INSERT OR REPLACE INTO tokens (token, username) VALUES (?, ?)").run(token, username);
 }
 
 export function storeGetUserByToken(token: string): { username: string; createdAt: Date } | undefined {
-  return tokenToUser.get(token);
+  const row = db.prepare("SELECT * FROM tokens WHERE token = ?").get(token) as Record<string, unknown> | undefined;
+  if (!row) return undefined;
+  return { username: row.username as string, createdAt: new Date(row.created_at as string) };
 }
 
 export function storeDeleteToken(token: string): boolean {
-  return tokenToUser.delete(token);
+  const result = db.prepare("DELETE FROM tokens WHERE token = ?").run(token);
+  return result.changes > 0;
 }
 
 // ---------- Environment ----------
@@ -111,45 +169,52 @@ export function storeCreateEnvironment(req: {
   capabilities?: Record<string, unknown>;
 }): EnvironmentRecord {
   const id = `env_${randomUUID().replace(/-/g, "")}`;
-  const now = new Date();
-  const record: EnvironmentRecord = {
-    id,
-    secret: req.secret,
-    machineName: req.machineName ?? null,
-    directory: req.directory ?? null,
-    branch: req.branch ?? null,
-    gitRepoUrl: req.gitRepoUrl ?? null,
-    maxSessions: req.maxSessions ?? 1,
-    workerType: req.workerType ?? "claude_code",
-    bridgeId: req.bridgeId ?? null,
-    capabilities: req.capabilities ?? null,
-    status: "active",
-    username: req.username ?? null,
-    lastPollAt: now,
-    createdAt: now,
-    updatedAt: now,
-  };
-  environments.set(id, record);
-  return record;
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO environments (id, secret, machine_name, directory, branch, git_repo_url,
+      max_sessions, worker_type, bridge_id, capabilities, status, username, last_poll_at,
+      created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+  `).run(
+    id, req.secret,
+    req.machineName ?? null, req.directory ?? null, req.branch ?? null, req.gitRepoUrl ?? null,
+    req.maxSessions ?? 1, req.workerType ?? "claude_code", req.bridgeId ?? null,
+    req.capabilities ? JSON.stringify(req.capabilities) : null,
+    req.username ?? null, now, now, now,
+  );
+  return rowToEnvironment(db.prepare("SELECT * FROM environments WHERE id = ?").get(id) as Record<string, unknown>);
 }
 
 export function storeGetEnvironment(id: string): EnvironmentRecord | undefined {
-  return environments.get(id);
+  const row = db.prepare("SELECT * FROM environments WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+  return row ? rowToEnvironment(row) : undefined;
 }
 
-export function storeUpdateEnvironment(id: string, patch: Partial<Pick<EnvironmentRecord, "status" | "lastPollAt" | "updatedAt" | "capabilities" | "machineName" | "maxSessions" | "bridgeId">>): boolean {
-  const rec = environments.get(id);
-  if (!rec) return false;
-  Object.assign(rec, patch, { updatedAt: new Date() });
-  return true;
+export function storeUpdateEnvironment(
+  id: string,
+  patch: Partial<Pick<EnvironmentRecord, "status" | "lastPollAt" | "updatedAt" | "capabilities" | "machineName" | "maxSessions" | "bridgeId">>,
+): boolean {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (patch.status !== undefined) { sets.push("status = ?"); values.push(patch.status); }
+  if (patch.lastPollAt !== undefined) { sets.push("last_poll_at = ?"); values.push(patch.lastPollAt?.toISOString() ?? null); }
+  if (patch.capabilities !== undefined) { sets.push("capabilities = ?"); values.push(patch.capabilities ? JSON.stringify(patch.capabilities) : null); }
+  if (patch.machineName !== undefined) { sets.push("machine_name = ?"); values.push(patch.machineName); }
+  if (patch.maxSessions !== undefined) { sets.push("max_sessions = ?"); values.push(patch.maxSessions); }
+  if (patch.bridgeId !== undefined) { sets.push("bridge_id = ?"); values.push(patch.bridgeId); }
+  if (sets.length === 0) return false;
+  sets.push("updated_at = ?"); values.push(new Date().toISOString());
+  values.push(id);
+  const result = db.prepare(`UPDATE environments SET ${sets.join(", ")} WHERE id = ?`).run(...(values as import("bun:sqlite").SQLQueryBindings[]));
+  return result.changes > 0;
 }
 
 export function storeListActiveEnvironments(): EnvironmentRecord[] {
-  return [...environments.values()].filter((e) => e.status === "active");
+  return (db.prepare("SELECT * FROM environments WHERE status = 'active'").all() as Record<string, unknown>[]).map(rowToEnvironment);
 }
 
 export function storeListActiveEnvironmentsByUsername(username: string): EnvironmentRecord[] {
-  return [...environments.values()].filter((e) => e.status === "active" && e.username === username);
+  return (db.prepare("SELECT * FROM environments WHERE status = 'active' AND username = ?").all(username) as Record<string, unknown>[]).map(rowToEnvironment);
 }
 
 // ---------- Session ----------
@@ -163,154 +228,123 @@ export function storeCreateSession(req: {
   username?: string | null;
 }): SessionRecord {
   const id = `${req.idPrefix || "session_"}${randomUUID().replace(/-/g, "")}`;
-  const now = new Date();
-  const record: SessionRecord = {
-    id,
-    environmentId: req.environmentId ?? null,
-    title: req.title ?? null,
-    status: "idle",
-    source: req.source ?? "remote-control",
-    permissionMode: req.permissionMode ?? null,
-    workerEpoch: 0,
-    username: req.username ?? null,
-    createdAt: now,
-    updatedAt: now,
-  };
-  sessions.set(id, record);
-  return record;
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO sessions (id, environment_id, title, status, source, permission_mode, worker_epoch, username, created_at, updated_at)
+    VALUES (?, ?, ?, 'idle', ?, ?, 0, ?, ?, ?)
+  `).run(
+    id, req.environmentId ?? null, req.title ?? null,
+    req.source ?? "remote-control", req.permissionMode ?? null,
+    req.username ?? null, now, now,
+  );
+  return rowToSession(db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as Record<string, unknown>);
 }
 
 export function storeGetSession(id: string): SessionRecord | undefined {
-  return sessions.get(id);
+  const row = db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+  return row ? rowToSession(row) : undefined;
 }
 
-export function storeUpdateSession(id: string, patch: Partial<Pick<SessionRecord, "title" | "status" | "workerEpoch" | "updatedAt">>): boolean {
-  const rec = sessions.get(id);
-  if (!rec) return false;
-  Object.assign(rec, patch, { updatedAt: new Date() });
-  return true;
+export function storeUpdateSession(
+  id: string,
+  patch: Partial<Pick<SessionRecord, "title" | "status" | "workerEpoch" | "updatedAt">>,
+): boolean {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (patch.title !== undefined) { sets.push("title = ?"); values.push(patch.title); }
+  if (patch.status !== undefined) { sets.push("status = ?"); values.push(patch.status); }
+  if (patch.workerEpoch !== undefined) { sets.push("worker_epoch = ?"); values.push(patch.workerEpoch); }
+  if (sets.length === 0) return false;
+  sets.push("updated_at = ?"); values.push(new Date().toISOString());
+  values.push(id);
+  const result = db.prepare(`UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`).run(...(values as import("bun:sqlite").SQLQueryBindings[]));
+  return result.changes > 0;
 }
 
 export function storeListSessions(): SessionRecord[] {
-  return [...sessions.values()];
+  return (db.prepare("SELECT * FROM sessions ORDER BY updated_at DESC").all() as Record<string, unknown>[]).map(rowToSession);
 }
 
 export function storeListSessionsByUsername(username: string): SessionRecord[] {
-  return [...sessions.values()].filter((s) => s.username === username);
+  return (db.prepare("SELECT * FROM sessions WHERE username = ? ORDER BY updated_at DESC").all(username) as Record<string, unknown>[]).map(rowToSession);
 }
 
 export function storeListSessionsByEnvironment(envId: string): SessionRecord[] {
-  return [...sessions.values()].filter((s) => s.environmentId === envId);
+  return (db.prepare("SELECT * FROM sessions WHERE environment_id = ? ORDER BY updated_at DESC").all(envId) as Record<string, unknown>[]).map(rowToSession);
 }
 
 export function storeDeleteSession(id: string): boolean {
-  sessionWorkers.delete(id);
-  return sessions.delete(id);
+  const result = db.prepare("DELETE FROM sessions WHERE id = ?").run(id);
+  return result.changes > 0;
 }
 
 // ---------- Session Worker ----------
 
 export function storeGetSessionWorker(sessionId: string): SessionWorkerRecord | undefined {
-  return sessionWorkers.get(sessionId);
+  const row = db.prepare("SELECT * FROM session_workers WHERE session_id = ?").get(sessionId) as Record<string, unknown> | undefined;
+  return row ? rowToSessionWorker(row) : undefined;
 }
 
-export function storeUpsertSessionWorker(sessionId: string, patch: {
-  workerStatus?: string | null;
-  externalMetadata?: Record<string, unknown> | null;
-  requiresActionDetails?: Record<string, unknown> | null;
-  lastHeartbeatAt?: Date | null;
-}): SessionWorkerRecord {
-  const now = new Date();
-  const existing = sessionWorkers.get(sessionId);
-  const record: SessionWorkerRecord = existing ?? {
-    sessionId,
-    workerStatus: null,
-    externalMetadata: null,
-    requiresActionDetails: null,
-    lastHeartbeatAt: null,
-    createdAt: now,
-    updatedAt: now,
-  };
+export function storeClearSessionRequiresAction(sessionId: string): void {
+  storeUpsertSessionWorker(sessionId, { requiresActionDetails: null });
+}
 
-  if (patch.workerStatus !== undefined) {
-    record.workerStatus = patch.workerStatus;
-  }
-  if (patch.externalMetadata !== undefined) {
-    if (patch.externalMetadata === null) {
-      record.externalMetadata = null;
-    } else {
-      record.externalMetadata = {
-        ...(record.externalMetadata ?? {}),
-        ...patch.externalMetadata,
-      };
+export function storeUpsertSessionWorker(
+  sessionId: string,
+  patch: {
+    workerStatus?: string | null;
+    externalMetadata?: Record<string, unknown> | null;
+    requiresActionDetails?: Record<string, unknown> | null;
+    lastHeartbeatAt?: Date | null;
+  },
+): SessionWorkerRecord {
+  const now = new Date().toISOString();
+  const existing = storeGetSessionWorker(sessionId);
+
+  if (!existing) {
+    db.prepare(`
+      INSERT INTO session_workers (session_id, worker_status, external_metadata, requires_action_details, last_heartbeat_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      sessionId,
+      patch.workerStatus ?? null,
+      patch.externalMetadata ? JSON.stringify(patch.externalMetadata) : null,
+      patch.requiresActionDetails ? JSON.stringify(patch.requiresActionDetails) : null,
+      patch.lastHeartbeatAt?.toISOString() ?? null,
+      now, now,
+    );
+  } else {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    if (patch.workerStatus !== undefined) { sets.push("worker_status = ?"); values.push(patch.workerStatus); }
+    if (patch.externalMetadata !== undefined) {
+      sets.push("external_metadata = ?");
+      if (patch.externalMetadata === null) {
+        values.push(null);
+      } else {
+        const merged = { ...(existing.externalMetadata ?? {}), ...patch.externalMetadata };
+        values.push(JSON.stringify(merged));
+      }
+    }
+    if (patch.requiresActionDetails !== undefined) {
+      sets.push("requires_action_details = ?");
+      values.push(patch.requiresActionDetails ? JSON.stringify(patch.requiresActionDetails) : null);
+    }
+    if (patch.lastHeartbeatAt !== undefined) {
+      sets.push("last_heartbeat_at = ?");
+      values.push(patch.lastHeartbeatAt?.toISOString() ?? null);
+    }
+    if (sets.length > 0) {
+      sets.push("updated_at = ?"); values.push(now);
+      values.push(sessionId);
+      db.prepare(`UPDATE session_workers SET ${sets.join(", ")} WHERE session_id = ?`).run(...(values as import("bun:sqlite").SQLQueryBindings[]));
     }
   }
-  if (patch.requiresActionDetails !== undefined) {
-    record.requiresActionDetails = patch.requiresActionDetails;
-  }
-  if (patch.lastHeartbeatAt !== undefined) {
-    record.lastHeartbeatAt = patch.lastHeartbeatAt;
-  }
-  record.updatedAt = now;
 
-  sessionWorkers.set(sessionId, record);
-  return record;
+  return rowToSessionWorker(db.prepare("SELECT * FROM session_workers WHERE session_id = ?").get(sessionId) as Record<string, unknown>);
 }
 
 // ---------- Work Items ----------
-
-// ---------- Session Ownership (UUID-based) ----------
-
-export function storeBindSession(sessionId: string, uuid: string): void {
-  let owners = sessionOwners.get(sessionId);
-  if (!owners) {
-    owners = new Set();
-    sessionOwners.set(sessionId, owners);
-  }
-  owners.add(uuid);
-}
-
-export function storeIsSessionOwner(sessionId: string, uuid: string): boolean {
-  const owners = sessionOwners.get(sessionId);
-  return owners ? owners.has(uuid) : false;
-}
-
-export function storeGetSessionOwners(sessionId: string): Set<string> | undefined {
-  return sessionOwners.get(sessionId);
-}
-
-export function storeListSessionsByOwnerUuid(uuid: string): SessionRecord[] {
-  const result: SessionRecord[] = [];
-  const resultIds = new Set<string>();
-
-  // Collect sessions already owned by this UUID
-  for (const [sessionId, owners] of sessionOwners) {
-    if (owners.has(uuid)) {
-      const session = sessions.get(sessionId);
-      if (session) {
-        result.push(session);
-        resultIds.add(sessionId);
-      }
-    }
-  }
-
-  // Auto-bind orphaned sessions (no owner — typically ACP agent sessions created via REST registration)
-  for (const [sessionId, session] of sessions) {
-    if (resultIds.has(sessionId)) continue;
-    const owners = sessionOwners.get(sessionId);
-    // No owners map entry at all, or empty owners set
-    const isOrphaned = !owners || owners.size === 0;
-    if (isOrphaned) {
-      storeBindSession(sessionId, uuid);
-      result.push(session);
-      resultIds.add(sessionId);
-    }
-  }
-
-  return result;
-}
-
-// ---------- Work Items (cont.) ----------
 
 export function storeCreateWorkItem(req: {
   environmentId: string;
@@ -318,85 +352,173 @@ export function storeCreateWorkItem(req: {
   secret: string;
 }): WorkItemRecord {
   const id = `work_${randomUUID().replace(/-/g, "")}`;
-  const now = new Date();
-  const record: WorkItemRecord = {
-    id,
-    environmentId: req.environmentId,
-    sessionId: req.sessionId,
-    state: "pending",
-    secret: req.secret,
-    createdAt: now,
-    updatedAt: now,
-  };
-  workItems.set(id, record);
-  return record;
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO work_items (id, environment_id, session_id, state, secret, created_at, updated_at)
+    VALUES (?, ?, ?, 'pending', ?, ?, ?)
+  `).run(id, req.environmentId, req.sessionId, req.secret, now, now);
+  return rowToWorkItem(db.prepare("SELECT * FROM work_items WHERE id = ?").get(id) as Record<string, unknown>);
 }
 
 export function storeGetWorkItem(id: string): WorkItemRecord | undefined {
-  return workItems.get(id);
+  const row = db.prepare("SELECT * FROM work_items WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+  return row ? rowToWorkItem(row) : undefined;
 }
 
 export function storeGetPendingWorkItem(environmentId: string): WorkItemRecord | undefined {
-  for (const item of workItems.values()) {
-    if (item.environmentId === environmentId && item.state === "pending") {
-      return item;
-    }
-  }
-  return undefined;
+  const row = db.prepare(
+    "SELECT * FROM work_items WHERE environment_id = ? AND state = 'pending' LIMIT 1"
+  ).get(environmentId) as Record<string, unknown> | undefined;
+  return row ? rowToWorkItem(row) : undefined;
 }
 
-export function storeUpdateWorkItem(id: string, patch: Partial<Pick<WorkItemRecord, "state" | "updatedAt">>): boolean {
-  const rec = workItems.get(id);
-  if (!rec) return false;
-  Object.assign(rec, patch, { updatedAt: new Date() });
-  return true;
+export function storeUpdateWorkItem(
+  id: string,
+  patch: Partial<Pick<WorkItemRecord, "state" | "updatedAt">>,
+): boolean {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (patch.state !== undefined) { sets.push("state = ?"); values.push(patch.state); }
+  if (sets.length === 0) return false;
+  sets.push("updated_at = ?"); values.push(new Date().toISOString());
+  values.push(id);
+  const result = db.prepare(`UPDATE work_items SET ${sets.join(", ")} WHERE id = ?`).run(...(values as import("bun:sqlite").SQLQueryBindings[]));
+  return result.changes > 0;
+}
+
+// ---------- Session Ownership (UUID-based) ----------
+
+export function storeBindSession(sessionId: string, uuid: string): void {
+  db.prepare("INSERT OR IGNORE INTO session_owners (session_id, owner_uuid) VALUES (?, ?)").run(sessionId, uuid);
+}
+
+export function storeIsSessionOwner(sessionId: string, uuid: string): boolean {
+  const row = db.prepare("SELECT 1 FROM session_owners WHERE session_id = ? AND owner_uuid = ?").get(sessionId, uuid);
+  return !!row;
+}
+
+export function storeGetSessionOwners(sessionId: string): Set<string> {
+  const rows = db.prepare("SELECT owner_uuid FROM session_owners WHERE session_id = ?").all(sessionId) as Record<string, unknown>[];
+  return new Set(rows.map((r) => r.owner_uuid as string));
+}
+
+export function storeListSessionsByOwnerUuid(uuid: string): SessionRecord[] {
+  const owned = (db.prepare(`
+    SELECT s.* FROM sessions s
+    INNER JOIN session_owners so ON s.id = so.session_id
+    WHERE so.owner_uuid = ?
+    ORDER BY s.updated_at DESC
+  `).all(uuid) as Record<string, unknown>[]).map(rowToSession);
+
+  const ownedIds = new Set(owned.map((s) => s.id));
+
+  // Auto-bind orphaned sessions (no owners)
+  const orphans = (db.prepare(`
+    SELECT s.* FROM sessions s
+    LEFT JOIN session_owners so ON s.id = so.session_id
+    WHERE so.session_id IS NULL
+    ORDER BY s.updated_at DESC
+  `).all() as Record<string, unknown>[]).map(rowToSession);
+
+  for (const session of orphans) {
+    if (!ownedIds.has(session.id)) {
+      storeBindSession(session.id, uuid);
+      owned.push(session);
+    }
+  }
+
+  return owned;
 }
 
 // ---------- ACP Agent (reuses EnvironmentRecord with workerType="acp") ----------
 
-/** List all ACP agents (environments with workerType="acp") */
 export function storeListAcpAgents(): EnvironmentRecord[] {
-  return [...environments.values()].filter((e) => e.workerType === "acp");
+  return (db.prepare("SELECT * FROM environments WHERE worker_type = 'acp'").all() as Record<string, unknown>[]).map(rowToEnvironment);
 }
 
-/** List ACP agents by channel group (stored in bridgeId field) */
 export function storeListAcpAgentsByChannelGroup(channelGroupId: string): EnvironmentRecord[] {
-  return [...environments.values()].filter(
-    (e) => e.workerType === "acp" && e.bridgeId === channelGroupId,
-  );
+  return (db.prepare("SELECT * FROM environments WHERE worker_type = 'acp' AND bridge_id = ?").all(channelGroupId) as Record<string, unknown>[]).map(rowToEnvironment);
 }
 
-/** List online ACP agents */
 export function storeListOnlineAcpAgents(): EnvironmentRecord[] {
-  return [...environments.values()].filter(
-    (e) => e.workerType === "acp" && e.status === "active",
-  );
+  return (db.prepare("SELECT * FROM environments WHERE worker_type = 'acp' AND status = 'active'").all() as Record<string, unknown>[]).map(rowToEnvironment);
 }
 
-/** Mark an ACP agent as offline */
 export function storeMarkAcpAgentOffline(id: string): boolean {
-  const rec = environments.get(id);
-  if (!rec || rec.workerType !== "acp") return false;
-  Object.assign(rec, { status: "offline", updatedAt: new Date() });
-  return true;
+  const result = db.prepare(
+    "UPDATE environments SET status = 'offline', updated_at = ? WHERE id = ? AND worker_type = 'acp'"
+  ).run(new Date().toISOString(), id);
+  return result.changes > 0;
 }
 
-/** Mark an ACP agent as online (on reconnect) */
 export function storeMarkAcpAgentOnline(id: string): boolean {
-  const rec = environments.get(id);
-  if (!rec || rec.workerType !== "acp") return false;
-  Object.assign(rec, { status: "active", lastPollAt: new Date(), updatedAt: new Date() });
-  return true;
+  const now = new Date().toISOString();
+  const result = db.prepare(
+    "UPDATE environments SET status = 'active', last_poll_at = ?, updated_at = ? WHERE id = ? AND worker_type = 'acp'"
+  ).run(now, now, id);
+  return result.changes > 0;
+}
+
+// ---------- Pending Permissions ----------
+
+export interface PendingPermissionRecord {
+  id: string;
+  sessionId: string;
+  requestId: string;
+  payload: unknown;
+  createdAt: Date;
+}
+
+function rowToPendingPermission(row: Record<string, unknown>): PendingPermissionRecord {
+  return {
+    id: row.id as string,
+    sessionId: row.session_id as string,
+    requestId: row.request_id as string,
+    payload: JSON.parse(row.payload as string),
+    createdAt: new Date(row.created_at as string),
+  };
+}
+
+export function storeAddPendingPermission(sessionId: string, requestId: string, payload: unknown): PendingPermissionRecord {
+  const id = `perm_${randomUUID().replace(/-/g, "")}`;
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT OR REPLACE INTO pending_permissions (id, session_id, request_id, payload, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(id, sessionId, requestId, JSON.stringify(payload), now);
+  return rowToPendingPermission(db.prepare("SELECT * FROM pending_permissions WHERE id = ?").get(id) as Record<string, unknown>);
+}
+
+export function storeListPendingPermissions(sessionId: string): PendingPermissionRecord[] {
+  return (db
+    .prepare("SELECT * FROM pending_permissions WHERE session_id = ? ORDER BY created_at ASC")
+    .all(sessionId) as Record<string, unknown>[])
+    .map(rowToPendingPermission);
+}
+
+export function storeRemovePendingPermission(sessionId: string, requestId: string): boolean {
+  const result = db
+    .prepare("DELETE FROM pending_permissions WHERE session_id = ? AND request_id = ?")
+    .run(sessionId, requestId);
+  return result.changes > 0;
+}
+
+export function storeClearPendingPermissions(sessionId: string): void {
+  db.prepare("DELETE FROM pending_permissions WHERE session_id = ?").run(sessionId);
 }
 
 // ---------- Reset (for tests) ----------
 
 export function storeReset() {
-  users.clear();
-  tokenToUser.clear();
-  environments.clear();
-  sessions.clear();
-  workItems.clear();
-  sessionWorkers.clear();
-  sessionOwners.clear();
+  db.exec(`
+    DELETE FROM events;
+    DELETE FROM pending_permissions;
+    DELETE FROM session_owners;
+    DELETE FROM session_workers;
+    DELETE FROM work_items;
+    DELETE FROM sessions;
+    DELETE FROM environments;
+    DELETE FROM tokens;
+    DELETE FROM users;
+  `);
 }

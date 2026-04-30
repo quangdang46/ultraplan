@@ -1,10 +1,12 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, GitBranch, X, Pause, Folder, FileText, Command } from "lucide-react";
+import { ArrowUp, GitBranch, X, Pause, Folder, FileText, Command, ImagePlus, HelpCircle, Undo2 } from "lucide-react";
 import { useStreamContext } from "../../hooks/useStreamContext";
 import { getApiClient } from "../../api/client";
+import { ensureApiAuthenticated } from "../../features/chat/streamTransport";
 import type { CommandSuggestion, FileSuggestion, ReplyQuote } from "../../api/types";
+import { KeyboardShortcutHelp } from "./KeyboardShortcutHelp";
 import {
 	escapeRegExp,
 	extractTaggedFiles,
@@ -60,7 +62,12 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
   const [suggestions, setSuggestions] = useState<SuggestionViewItem[]>([]);
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
-	const [suggestionsMeta, setSuggestionsMeta] = useState<{ isPartial?: boolean; capApplied?: boolean }>({});
+  const [suggestionsMeta, setSuggestionsMeta] = useState<{ isPartial?: boolean; capApplied?: boolean }>({});
+  const [images, setImages] = useState<{ dataUrl: string; name: string }[]>([]);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [commandHistory, setCommandHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 	const [runtimeState, setRuntimeState] = useState<{
 		gitBranch: string;
 		model: string;
@@ -77,8 +84,35 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
 	const client = getApiClient();
   const { sendMessage, executeSlashCommand, cancelStream, isStreaming } = useStreamContext();
 
+  // Tab completion state
+  const [lastTabTime, setLastTabTime] = useState(0);
+
   const triggerState = useMemo(() => parseTriggerState(reply, cursorPos), [reply, cursorPos]);
   const taggedFiles = useMemo(() => extractTaggedFiles(reply), [reply]);
+
+  // Load command history from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("composerCommandHistory");
+      if (saved) {
+        const parsed = JSON.parse(saved) as string[];
+        if (Array.isArray(parsed)) {
+          setCommandHistory(parsed);
+        }
+      }
+    } catch {
+      // ignore localStorage errors
+    }
+  }, []);
+
+  // Save command history to localStorage when it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem("composerCommandHistory", JSON.stringify(commandHistory));
+    } catch {
+      // ignore localStorage errors
+    }
+  }, [commandHistory]);
 
   useEffect(() => {
     if (!quote) return;
@@ -95,6 +129,7 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
 		let cancelled = false;
 		const loadState = async () => {
 			try {
+				await ensureApiAuthenticated(client);
 				const state = await client.getState();
 				if (cancelled) return;
 				setRuntimeState({
@@ -249,10 +284,27 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
     setCursorPos(0);
     setSuggestions([]);
     setSuggestionError(null);
+    // Save to command history
+    if (text) {
+      setCommandHistory((prev) => {
+        const filtered = prev.filter((h) => h !== text);
+        return [...filtered, text];
+      });
+      setHistoryIndex(-1);
+    }
   };
 
   const handlePause = () => {
     void cancelStream();
+  };
+
+  const handleRewind = async () => {
+    if (!sessionId) return;
+    try {
+      await client.rewindSession(sessionId);
+    } catch {
+      // ignore
+    }
   };
 
   return (
@@ -296,6 +348,23 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
         </div>
       )}
 
+      {/* Image previews */}
+      {images.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-2">
+          {images.map((img, i) => (
+            <div key={i} className="relative group">
+              <img src={img.dataUrl} alt={img.name} className="h-14 w-14 rounded-lg object-cover border border-border-warm" />
+              <button
+                onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                className="absolute -top-1.5 -right-1.5 hidden group-hover:flex h-4 w-4 items-center justify-center rounded-full bg-near-black text-white"
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="relative">
         {taggedFiles.length > 0 && (
           <div className="mb-2 flex flex-wrap items-center gap-1.5">
@@ -315,17 +384,65 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
           onChange={(e) => {
             setReply(e.target.value);
             setCursorPos(e.target.selectionStart ?? e.target.value.length);
+            // Reset history index when user types
+            setHistoryIndex(-1);
           }}
           onClick={(e) => setCursorPos((e.target as HTMLInputElement).selectionStart ?? 0)}
           onKeyUp={(e) => setCursorPos((e.target as HTMLInputElement).selectionStart ?? 0)}
           onKeyDown={(e) => {
+            // Command history navigation with ArrowUp/ArrowDown
+            if (e.key === "ArrowUp" && commandHistory.length > 0 && suggestions.length === 0) {
+              e.preventDefault();
+              const nextIndex = historyIndex === -1
+                ? commandHistory.length - 1
+                : Math.max(0, historyIndex - 1);
+              const historyItem = commandHistory[nextIndex];
+              setHistoryIndex(nextIndex);
+              setReply(historyItem);
+              // Use setTimeout to ensure reply state is updated before setting cursor
+              setTimeout(() => {
+                inputRef.current?.setSelectionRange(historyItem.length, historyItem.length);
+              }, 0);
+              return;
+            }
+            if (e.key === "ArrowDown" && historyIndex !== -1 && suggestions.length === 0) {
+              e.preventDefault();
+              if (historyIndex >= commandHistory.length - 1) {
+                // At end of history, restore current input
+                setHistoryIndex(-1);
+                setReply("");
+              } else {
+                const nextIndex = historyIndex + 1;
+                const historyItem = commandHistory[nextIndex];
+                setHistoryIndex(nextIndex);
+                setReply(historyItem);
+                setTimeout(() => {
+                  inputRef.current?.setSelectionRange(historyItem.length, historyItem.length);
+                }, 0);
+              }
+              return;
+            }
             if (suggestions.length > 0) {
               const isNext = e.key === "ArrowDown" || (e.ctrlKey && (e.key === "n" || e.key === "N"));
               const isPrev = e.key === "ArrowUp" || (e.ctrlKey && (e.key === "p" || e.key === "P"));
               if (e.key === "Tab") {
                 e.preventDefault();
+
+                // Double-tab detection: if Tab pressed within 400ms of last Tab, accept top suggestion
+                const now = Date.now();
+                if (now - lastTabTime < 400 && triggerState) {
+                  // Double-tab: accept top suggestion directly
+                  if (suggestions.length > 0) {
+                    applySuggestion(0);
+                  }
+                  setLastTabTime(0);
+                  return;
+                }
+
+                // Single-tab: apply common prefix expansion or current selection
+                setLastTabTime(now);
                 const expanded = applyCommonPrefix();
-                if (!expanded) {
+                if (!expanded && suggestions.length > 0) {
                   applySuggestion(selectedIndex);
                 }
                 return;
@@ -437,6 +554,33 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
           </div>
         )}
         <button
+          onClick={() => imageInputRef.current?.click()}
+          className="absolute right-[38px] top-1/2 -translate-y-1/2 w-[25px] h-[25px] rounded-md text-stone-gray hover:text-charcoal-warm flex items-center justify-center transition-colors"
+          aria-label="Attach image"
+          title="Attach image"
+        >
+          <ImagePlus className="w-3.5 h-3.5" />
+        </button>
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = e.target.files;
+            if (!files) return;
+            Array.from(files).forEach((file) => {
+              const reader = new FileReader();
+              reader.onload = () => {
+                setImages((prev) => [...prev, { dataUrl: reader.result as string, name: file.name }]);
+              };
+              reader.readAsDataURL(file);
+            });
+            e.target.value = "";
+          }}
+        />
+        <button
           onClick={isStreaming ? handlePause : () => void handleSubmit()}
           className={`absolute right-[7px] top-1/2 -translate-y-1/2 w-[25px] h-[25px] rounded-md text-white flex items-center justify-center transition-colors ${
             isStreaming
@@ -452,6 +596,28 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
           )}
         </button>
       </div>
+      {/* Help shortcut */}
+      <div className="flex justify-end mt-1">
+        {sessionId && (
+          <button
+            onClick={() => void handleRewind()}
+            className="text-[10px] text-stone-gray hover:text-charcoal-warm transition-colors flex items-center gap-1 mr-2"
+            title="Rewind last turn"
+          >
+            <Undo2 className="w-3 h-3" />
+            <span>Rewind</span>
+          </button>
+        )}
+        <button
+          onClick={() => setShortcutHelpOpen(true)}
+          className="text-[10px] text-stone-gray hover:text-charcoal-warm transition-colors flex items-center gap-1"
+          title="Keyboard shortcuts (?)"
+        >
+          <HelpCircle className="w-3 h-3" />
+          <span>Shortcuts</span>
+        </button>
+      </div>
+      {shortcutHelpOpen && <KeyboardShortcutHelp onClose={() => setShortcutHelpOpen(false)} />}
     </div>
   );
 };

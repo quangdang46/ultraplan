@@ -11,8 +11,9 @@ import {
   storeListSessionsByOwnerUuid,
 } from "../store";
 import { randomUUID } from "node:crypto";
-import { getAllEventBuses, removeEventBus } from "../transport/event-bus";
+import { getAllEventBuses, removeEventBus, getEventBus } from "../transport/event-bus";
 import type { CreateSessionRequest, CreateCodeSessionRequest, SessionResponse, SessionSummaryResponse } from "../types/api";
+import { getLastPersistedSeqNum } from "./transport";
 
 const CODE_SESSION_PREFIX = "cse_";
 const WEB_SESSION_PREFIX = "session_";
@@ -141,8 +142,8 @@ export function updateSessionTitle(sessionId: string, title: string) {
 
 export function updateSessionStatus(sessionId: string, status: string) {
   storeUpdateSession(sessionId, { status });
-  const bus = getAllEventBuses().get(sessionId);
-  if (!bus) return;
+  const bus = getAllEventBuses().get(sessionId)
+    ?? getEventBus(sessionId, getLastPersistedSeqNum(sessionId));
 
   bus.publish({
     id: randomUUID(),

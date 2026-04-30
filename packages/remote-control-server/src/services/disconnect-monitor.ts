@@ -3,6 +3,7 @@ import { storeListActiveEnvironments, storeUpdateEnvironment, storeMarkAcpAgentO
 import { storeListSessions } from "../store";
 import { config } from "../config";
 import { updateSessionStatus } from "./session";
+import { subprocessManager } from "./subprocess-manager";
 
 export function runDisconnectMonitorSweep(now = Date.now()) {
   const timeoutMs = config.disconnectTimeout * 1000;
@@ -27,11 +28,17 @@ export function runDisconnectMonitorSweep(now = Date.now()) {
   // Check session timeout (2x disconnect timeout with no update)
   const sessions = storeListSessions();
   for (const session of sessions) {
-    if (session.status === "running" || session.status === "idle") {
+    if (session.status === "running" || session.status === "idle" || session.status === "requires_action") {
       const elapsed = now - session.updatedAt.getTime();
       if (elapsed > timeoutMs * 2) {
-        log(`[RCS] Session ${session.id} marked inactive (no update for ${Math.round(elapsed / 1000)}s)`);
-        updateSessionStatus(session.id, "inactive");
+        const hasSubprocess = subprocessManager.isRunning(session.id);
+        if (session.status === "running" && !hasSubprocess) {
+          log(`[RCS] Session ${session.id} marked interrupted (subprocess gone, no update for ${Math.round(elapsed / 1000)}s)`);
+          updateSessionStatus(session.id, "interrupted");
+        } else if (!hasSubprocess) {
+          log(`[RCS] Session ${session.id} marked inactive (no update for ${Math.round(elapsed / 1000)}s)`);
+          updateSessionStatus(session.id, "inactive");
+        }
       }
     }
   }

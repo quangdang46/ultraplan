@@ -71,7 +71,25 @@ function toPendingPermission(requestId: string, request: unknown): PendingPermis
     toolInput,
     description,
     subtype: typeof record.subtype === 'string' ? record.subtype : undefined,
+    alwaysAllow: Boolean(record.alwaysAllow ?? record.always_allow),
   };
+}
+
+const RETRY_DELAYS = [1000, 2000, 4000]; // 1s, 2s, 4s
+const MAX_RETRIES = 3;
+
+function isRetryableError(err: unknown): boolean {
+  if (err instanceof Error) {
+    // Network errors (fetch failures)
+    if (err.name === 'TypeError' || err.message === 'Failed to fetch' || err.message === 'NetworkError' || err.message === 'Network request failed') {
+      return true;
+    }
+    // 5xx server errors are retried
+    if (err.message.includes('500') || err.message.includes('502') || err.message.includes('503') || err.message.includes('504')) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function useStream() {
@@ -83,11 +101,58 @@ export function useStream() {
     pendingPermissions: [],
     error: null,
     pendingRouteSync: false,
+    connectionState: 'connected',
   });
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const attachControllerRef = useRef<AbortController | null>(null);
+  const toolInputBuffersRef = useRef<Map<string, string>>(new Map());
+  const toolStartTimesRef = useRef<Map<string, number>>(new Map());
+  const toolTimerRef = useRef<number | null>(null);
+  const lastSeqNumRef = useRef<number>(0);
+  const serverEpochRef = useRef<number | null>(null);
   const client = getApiClient();
+
+  const stopToolTimer = useCallback(() => {
+    if (toolTimerRef.current !== null) {
+      window.clearInterval(toolTimerRef.current);
+      toolTimerRef.current = null;
+    }
+  }, []);
+
+  const ensureToolTimer = useCallback(() => {
+    if (toolTimerRef.current !== null) return;
+    toolTimerRef.current = window.setInterval(() => {
+      setState((s) => {
+        if (toolStartTimesRef.current.size === 0) return s;
+
+        const now = Date.now();
+        const activeTools = new Map(s.activeTools);
+        let changed = false;
+
+        for (const [id, startedAt] of toolStartTimesRef.current.entries()) {
+          const tool = activeTools.get(id);
+          if (!tool || tool.status !== 'running') continue;
+          const elapsedMs = now - startedAt;
+          if (tool.elapsedMs === elapsedMs) continue;
+          activeTools.set(id, { ...tool, elapsedMs });
+          changed = true;
+        }
+
+        if (!changed) return s;
+
+        const messages = s.messages.map((message) => ({
+          ...message,
+          toolCalls: message.toolCalls.map((tool) => {
+            const updated = activeTools.get(tool.id);
+            return updated ?? tool;
+          }),
+        }));
+
+        return { ...s, activeTools, messages };
+      });
+    }, 250);
+  }, []);
 
   const ensureAuthenticated = useCallback(async (): Promise<void> => {
     await ensureApiAuthenticated(client);
@@ -97,10 +162,12 @@ export function useStream() {
     return () => {
       abortControllerRef.current?.abort();
       attachControllerRef.current?.abort();
+      stopToolTimer();
     };
-  }, []);
+  }, [stopToolTimer]);
 
   const applyEvent = useCallback((event: ServerEvent) => {
+    console.log("[useStream] applyEvent:", event.type, event.data);
     switch (event.type) {
       case 'session_created': {
         setState((s) => ({
@@ -116,7 +183,8 @@ export function useStream() {
       }
 
       case 'content_delta': {
-        const textDelta = event.data.delta?.text || '';
+        const rawDelta = (event.data as any)?.raw?.delta;
+        const textDelta = event.data.delta?.text || rawDelta?.text || '';
         setState((s) => {
           const messages = [...s.messages];
           const lastMsg = messages[messages.length - 1];
@@ -139,7 +207,8 @@ export function useStream() {
       }
 
       case 'thinking_delta': {
-        const thinkingDelta = event.data.delta?.thinking || '';
+        const rawDelta = (event.data as any)?.raw?.delta;
+        const thinkingDelta = event.data.delta?.thinking || rawDelta?.thinking || '';
         if (!thinkingDelta) break;
 
         setState((s) => {
@@ -154,9 +223,10 @@ export function useStream() {
               toolCalls: [],
             });
           } else {
+            // Replace thinking content so only the latest block is shown
             messages[messages.length - 1] = {
               ...lastMsg,
-              thinking: `${lastMsg.thinking ?? ''}${thinkingDelta}`,
+              thinking: thinkingDelta,
             };
           }
           return { ...s, isStreaming: true, messages };
@@ -165,38 +235,91 @@ export function useStream() {
       }
 
       case 'content_block': {
-        const text = extractBlockText(event);
-        if (!text) break;
+        const rawBlock = (event.data as any)?.raw?.block;
+        const eventDataBlock = event.data.block || rawBlock;
+        if (!eventDataBlock) break;
+
+        // Check if this is an image block
+        const blockType = eventDataBlock.type;
+        const isImageBlock = blockType === 'image';
+        const isDocumentBlock = blockType === 'document';
+
+        // Extract image data if present
+        let imageData: string | undefined;
+        let imageMimeType: string | undefined;
+        if (isImageBlock) {
+          const rawContent = (eventDataBlock as { content?: unknown }).content;
+          if (Array.isArray(rawContent)) {
+            for (const item of rawContent) {
+              if (item && typeof item === 'object' && (item as { type?: string }).type === 'image') {
+                const imgItem = item as { source?: { data?: string; media_type?: string } };
+                if (imgItem.source) {
+                  imageData = imgItem.source.data;
+                  imageMimeType = imgItem.source.media_type;
+                }
+              }
+            }
+          }
+        }
+
+        // Extract text content
+        const text = extractBlockText({ type: 'content_block', data: { block: eventDataBlock } } as any);
+
+        // Only process if we have something to show
+        if (!text && !isImageBlock) break;
 
         setState((s) => {
           const messages = [...s.messages];
           const lastMsg = messages[messages.length - 1];
+
+          // Build artifact if this is an image or document
+          const artifact = isImageBlock || isDocumentBlock ? {
+            id: `artifact_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+            type: blockType,
+            label: isImageBlock ? 'Image' : (eventDataBlock.title as string || 'Document'),
+            detail: text || undefined,
+            data: imageData,
+            mimeType: imageMimeType,
+          } : undefined;
+
           if (!lastMsg || lastMsg.role !== 'assistant') {
             messages.push({
               id: `assistant_block_${Date.now()}`,
               role: 'assistant',
-              content: text,
+              content: text || '',
               toolCalls: [],
+              artifacts: artifact ? [artifact] : undefined,
             });
           } else {
-            messages[messages.length - 1] = {
+            const updated: typeof lastMsg = {
               ...lastMsg,
-              content: text,
+              content: text || lastMsg.content,
             };
+            if (artifact) {
+              updated.artifacts = [...(lastMsg.artifacts || []), artifact];
+            }
+            messages[messages.length - 1] = updated;
           }
-          return { ...s, isStreaming: true, messages };
+          return { ...s, isStreaming: false, messages };
         });
         break;
       }
 
       case 'tool_start': {
-        const toolData = event.data;
+        const rawData = (event.data as any)?.raw || {};
+        const toolData = { ...rawData, ...event.data };
+        const startedAt = Date.now();
+        toolStartTimesRef.current.set(toolData.id, startedAt);
+        ensureToolTimer();
         const toolItem: ToolItem = {
           id: toolData.id,
           title: formatToolTitle(toolData.name, toolData.input),
           kind: toolData.name,
           status: 'running',
           outputLines: [],
+          liveOutput: '',
+          liveErrorOutput: '',
+          elapsedMs: 0,
         };
 
         setState((s) => {
@@ -224,95 +347,164 @@ export function useStream() {
         break;
       }
 
-      case 'tool_result': {
-        const resultData = event.data as Record<string, unknown>;
-        const toolCallId = String(
-          resultData.toolCallId ?? resultData.tool_use_id ?? resultData.id ?? ''
-        );
-        const resultText = toToolResultText(
-          resultData.result ?? resultData.content
-        );
-        const exitCode =
-          typeof resultData.exitCode === 'number'
-            ? resultData.exitCode
-            : resultData.is_error
-              ? 1
-              : 0;
-        const timeDisplay =
-          typeof resultData.timeDisplay === 'string'
-            ? resultData.timeDisplay
-            : '';
+      case 'tool_input_delta': {
+        const toolId = event.data.id;
+        const existingBuffer = toolInputBuffersRef.current.get(toolId) ?? '';
+        const nextBuffer = `${existingBuffer}${event.data.partialJson}`;
+        toolInputBuffersRef.current.set(toolId, nextBuffer);
+
+        let parsedInput: Record<string, unknown> | null = null;
+        try {
+          const parsed = JSON.parse(nextBuffer) as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            parsedInput = parsed as Record<string, unknown>;
+          }
+        } catch {
+          parsedInput = null;
+        }
 
         setState((s) => {
-          const newTools = new Map(s.activeTools);
-          const existingTool = newTools.get(toolCallId);
+          const activeTools = new Map(s.activeTools);
+          const existingTool = activeTools.get(toolId);
+          if (!existingTool) return s;
 
-          if (existingTool) {
-            newTools.set(toolCallId, {
-              ...existingTool,
-              status: exitCode === 0 ? 'done' : 'failed',
-              output: resultText,
-              exitCode,
-              timeDisplay,
-              elapsedMs: existingTool.elapsedMs,
-              outputLines: resultText ? resultText.split('\n').slice(-5) : [],
-            });
-          }
+          const title = parsedInput
+            ? formatToolTitle(existingTool.kind, parsedInput)
+            : `${existingTool.kind} - ${nextBuffer}`;
+          const updatedTool = { ...existingTool, title };
+          activeTools.set(toolId, updatedTool);
 
-          const messages = [...s.messages];
-          const lastMsg = messages[messages.length - 1];
-          if (lastMsg && lastMsg.role === 'assistant') {
-            messages[messages.length - 1] = {
-              ...lastMsg,
-              toolCalls: lastMsg.toolCalls.map((tc) =>
-                tc.id === toolCallId
-                  ? {
-                      ...tc,
-                      status: exitCode === 0 ? 'done' : 'failed',
-                      output: resultText,
-                      exitCode,
-                      timeDisplay,
-                      outputLines: resultText ? resultText.split('\n').slice(-5) : [],
-                    }
-                  : tc
-              ),
-            };
-          }
+          const messages = s.messages.map((message) => ({
+            ...message,
+            toolCalls: message.toolCalls.map((tool) =>
+              tool.id === toolId ? updatedTool : tool,
+            ),
+          }));
 
-          return { ...s, activeTools: newTools, messages };
+          return { ...s, activeTools, messages };
+        });
+        break;
+      }
+
+      case 'tool_output_delta': {
+        const rawData = (event.data as any)?.raw || {};
+        const deltaData = { ...rawData, ...(event.data as Record<string, unknown>) } as Record<string, unknown>;
+        const toolCallId = String(deltaData.toolCallId ?? deltaData.tool_use_id ?? deltaData.id ?? '');
+        if (!toolCallId) break;
+        const chunk = typeof deltaData.chunk === 'string'
+          ? deltaData.chunk
+          : typeof deltaData.outputLine === 'string'
+            ? deltaData.outputLine
+            : '';
+        if (!chunk) break;
+        const stream = deltaData.stream === 'stderr' ? 'stderr' : 'stdout';
+
+        setState((s) => {
+          const activeTools = new Map(s.activeTools);
+          const existingTool = activeTools.get(toolCallId);
+          if (!existingTool) return s;
+
+          const outputLines = [...(existingTool.outputLines ?? [])];
+          const nextLines = chunk.split(/\r?\n/).filter(Boolean);
+          outputLines.push(...nextLines);
+          const trimmedLines = outputLines.slice(-200);
+          const updatedTool: ToolItem = {
+            ...existingTool,
+            outputLines: trimmedLines,
+            liveOutput: stream === 'stdout'
+              ? `${existingTool.liveOutput ?? ''}${chunk}`
+              : existingTool.liveOutput,
+            liveErrorOutput: stream === 'stderr'
+              ? `${existingTool.liveErrorOutput ?? ''}${chunk}`
+              : existingTool.liveErrorOutput,
+          };
+          activeTools.set(toolCallId, updatedTool);
+
+          const messages = s.messages.map((message) => ({
+            ...message,
+            toolCalls: message.toolCalls.map((tool) =>
+              tool.id === toolCallId ? updatedTool : tool,
+            ),
+          }));
+
+          return { ...s, activeTools, messages };
+        });
+        break;
+      }
+
+      case 'tool_result': {
+        const rawData = (event.data as any)?.raw || {};
+        const resultData = { ...rawData, ...(event.data as Record<string, unknown>) } as Record<string, unknown>;
+        const toolCallId = String(
+          resultData.toolCallId ?? resultData.tool_use_id ?? resultData.id ?? '',
+        );
+        if (!toolCallId) break;
+
+        setState((s) => {
+          const activeTools = new Map(s.activeTools);
+          const existingTool = activeTools.get(toolCallId);
+          if (!existingTool) return s;
+
+          const rendered = toToolResultText(resultData);
+          const mergedOutput = rendered || existingTool.liveOutput || existingTool.output || '';
+          const updatedTool: ToolItem = {
+            ...existingTool,
+            status: resultData.isError ? 'failed' : 'done',
+            output: mergedOutput,
+            stderr: existingTool.liveErrorOutput || existingTool.stderr,
+            exitCode: typeof resultData.exitCode === 'number' ? resultData.exitCode : existingTool.exitCode,
+            timeDisplay: typeof resultData.timeDisplay === 'string' ? resultData.timeDisplay : existingTool.timeDisplay,
+          };
+          activeTools.delete(toolCallId);
+
+          const messages = s.messages.map((message) => ({
+            ...message,
+            toolCalls: message.toolCalls.map((tool) =>
+              tool.id === toolCallId ? updatedTool : tool,
+            ),
+          }));
+
+          return { ...s, activeTools, messages };
         });
         break;
       }
 
       case 'permission_request': {
-        const request = toPendingPermission(
-          event.data.request_id,
-          event.data.request,
-        );
-        setState((s) => ({
-          ...s,
-          pendingPermissions: [
-            ...s.pendingPermissions.filter(
-              (item) => item.requestId !== request.requestId,
-            ),
-            request,
-          ],
-        }));
+        const requestId = String((event.data as any)?.request_id || (event.data as any)?.requestId || Date.now());
+        const permission = toPendingPermission(requestId, (event.data as any)?.request ?? event.data);
+        setState((s) => {
+          const existing = s.pendingPermissions.find((item) => item.requestId === permission.requestId);
+          return {
+            ...s,
+            pendingPermissions: existing
+              ? s.pendingPermissions.map((item) => item.requestId === permission.requestId ? permission : item)
+              : [...s.pendingPermissions, permission],
+          };
+        });
         break;
       }
 
       case 'control_response': {
+        const requestId = String((event.data as any)?.request_id || (event.data as any)?.requestId || '');
         setState((s) => ({
           ...s,
-          pendingPermissions: s.pendingPermissions.filter(
-            (item) => item.requestId !== event.data.request_id,
-          ),
+          pendingPermissions: requestId
+            ? s.pendingPermissions.filter((item) => item.requestId !== requestId)
+            : s.pendingPermissions,
         }));
         break;
       }
 
       case 'message_end': {
-        setState((s) => ({ ...s, isStreaming: false }));
+        setState((s) => ({
+          ...s,
+          isStreaming: false,
+          messages: s.messages.map((message, index) =>
+            index === s.messages.length - 1 && message.role === 'assistant'
+              ? { ...message, streamingEndedAt: Date.now() }
+              : message,
+          ),
+        }));
         break;
       }
 
@@ -321,6 +513,7 @@ export function useStream() {
           ...s,
           isStreaming: false,
           error: event.data.message,
+          connectionState: 'failed',
         }));
         break;
       }
@@ -366,14 +559,44 @@ export function useStream() {
       }));
 
       try {
-        for await (const event of client.streamChat(
-          { message: content, quote, sessionId },
-          { signal: abortControllerRef.current.signal }
-        )) {
-          applyEvent(event);
+        let retryCount = 0;
+        let lastError: Error | null = null;
+
+        while (true) {
+          try {
+            for await (const event of client.streamChat(
+              { message: content, quote, sessionId },
+              { signal: abortControllerRef.current.signal }
+            )) {
+              applyEvent(event);
+            }
+            break; // success
+          } catch (err) {
+            lastError = err instanceof Error ? err : new Error(String(err));
+
+            // Don't retry on AbortError
+            if (lastError.name === 'AbortError') {
+              throw lastError;
+            }
+
+            // Don't retry on 4xx client errors
+            if (!isRetryableError(lastError)) {
+              throw lastError;
+            }
+
+            if (retryCount < MAX_RETRIES) {
+              retryCount++;
+              setState((s) => ({ ...s, connectionState: 'reconnecting' }));
+              const delay = RETRY_DELAYS[retryCount - 1] ?? RETRY_DELAYS[RETRY_DELAYS.length - 1];
+              await new Promise((r) => setTimeout(r, delay));
+              continue;
+            }
+
+            throw lastError; // max retries exceeded
+          }
         }
 
-        setState((s) => ({ ...s, isStreaming: false }));
+        setState((s) => ({ ...s, isStreaming: false, connectionState: 'connected' }));
         return true;
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
@@ -385,6 +608,7 @@ export function useStream() {
             ...s,
             isStreaming: false,
             error,
+            connectionState: 'failed',
             pendingRouteSync:
               s.pendingRouteSync && s.sessionId === null ? false : s.pendingRouteSync,
           }));
@@ -406,19 +630,74 @@ export function useStream() {
       attachControllerRef.current = new AbortController();
       await ensureAuthenticated();
 
+      let retryCount = 0;
+      const maxRetries = 5;
+
+      const connect = async () => {
+        try {
+          const fromSeq = lastSeqNumRef.current;
+          for await (const event of client.streamSessionEvents(
+            sessionId,
+            { signal: attachControllerRef.current!.signal },
+            fromSeq,
+          )) {
+            retryCount = 0;
+            setState((s) => ({ ...s, connectionState: 'connected' }));
+            const seqNum = (event as unknown as Record<string, unknown>).seqNum;
+            if (typeof seqNum === 'number' && seqNum > lastSeqNumRef.current) {
+              lastSeqNumRef.current = seqNum;
+            }
+            applyEvent(event);
+          }
+        } catch (err) {
+          if (err instanceof Error) {
+            if (err.name === 'AbortError') return;
+            if (err.message === 'SESSION_NOT_ACTIVE') {
+              setState((s) => ({ ...s, connectionState: 'interrupted' }));
+              return;
+            }
+          }
+
+          if (retryCount < maxRetries) {
+            retryCount++;
+            setState((s) => ({ ...s, connectionState: 'reconnecting' }));
+            const delay = Math.min(1000 * Math.pow(2, retryCount - 1), 16000);
+            await new Promise((r) => setTimeout(r, delay));
+
+            try {
+              const health = await client.getHealth();
+              if (serverEpochRef.current !== null && health.epoch !== serverEpochRef.current) {
+                serverEpochRef.current = health.epoch;
+                setState((s) => ({
+                  ...s,
+                  error: 'Server restarted — session may need to be resumed.',
+                  connectionState: 'restarted',
+                }));
+              }
+            } catch {
+              // ignore health check errors during reconnect
+            }
+
+            return connect();
+          }
+
+          setState((s) => ({
+            ...s,
+            error: err instanceof Error ? err.message : 'Stream connection failed',
+            connectionState: 'failed',
+          }));
+        }
+      };
+
+      // Capture initial server epoch
       try {
-        for await (const event of client.streamSessionEvents(
-          sessionId,
-          { signal: attachControllerRef.current.signal },
-        )) {
-          applyEvent(event);
-        }
-      } catch (err) {
-        if (err instanceof Error) {
-          if (err.name === 'AbortError') return;
-          if (err.message === 'SESSION_NOT_ACTIVE') return;
-        }
+        const health = await client.getHealth();
+        serverEpochRef.current = health.epoch;
+      } catch {
+        // non-fatal
       }
+
+      await connect();
     },
     [applyEvent, client, ensureAuthenticated]
   );
@@ -494,9 +773,17 @@ export function useStream() {
 
   const detachSession = useCallback(() => {
     attachControllerRef.current?.abort();
-  }, []);
+    toolInputBuffersRef.current.clear();
+    toolStartTimesRef.current.clear();
+    lastSeqNumRef.current = 0;
+    stopToolTimer();
+  }, [stopToolTimer]);
 
   const clearMessages = useCallback((sessionId: string | null = null) => {
+    toolInputBuffersRef.current.clear();
+    toolStartTimesRef.current.clear();
+    lastSeqNumRef.current = 0;
+    stopToolTimer();
     setState((s) => ({
       ...s,
       sessionId,
@@ -506,21 +793,31 @@ export function useStream() {
       activeTools: new Map(),
       pendingPermissions: [],
       error: null,
+      connectionState: 'connected',
     }));
-  }, []);
+  }, [stopToolTimer]);
 
-  const loadMessages = useCallback((messages: Message[], sessionId?: string | null) => {
+  const loadMessages = useCallback((
+    messages: Message[],
+    sessionId?: string | null,
+    options?: { preservePendingPermissions?: boolean },
+  ) => {
+    toolInputBuffersRef.current.clear();
+    toolStartTimesRef.current.clear();
+    lastSeqNumRef.current = 0;
+    stopToolTimer();
     setState((s) => ({
       ...s,
       sessionId: sessionId ?? s.sessionId,
       pendingRouteSync: false,
       messages,
       activeTools: new Map(),
-      pendingPermissions: [],
+      pendingPermissions: options?.preservePendingPermissions ? s.pendingPermissions : [],
       error: null,
       isStreaming: false,
+      connectionState: 'connected',
     }));
-  }, []);
+  }, [stopToolTimer]);
 
   const acknowledgeRouteSync = useCallback(() => {
     setState((s) => {

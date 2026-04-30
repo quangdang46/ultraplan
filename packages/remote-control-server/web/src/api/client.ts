@@ -16,7 +16,7 @@ export function getUuid(): string {
   }
 
   if (!uuid) {
-    uuid = generateUuid();
+    uuid = generateMessageUuid();
     try {
       localStorage.setItem(UUID_STORAGE_KEY, uuid);
     } catch {

@@ -17,6 +17,9 @@
 import { type ChildProcess, spawn } from "child_process";
 import { createInterface } from "readline";
 import { publishSessionEvent } from "./transport";
+import { updateSessionStatus } from "./session";
+import { storeUpsertSessionWorker } from "../store";
+import { log as logInfo, error as logError } from "../logger";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,7 +49,7 @@ interface SubprocessHandle {
   destroy(): void;
 }
 
-type TurnCompletionReason = "result" | "idle" | "error";
+type TurnCompletionReason = "result" | "idle" | "error" | "requires_action";
 
 type PendingTurnCompletion = {
   started: boolean;
@@ -101,6 +104,20 @@ function formatFailureMessage(
   return `Claude CLI subprocess exited with code ${code ?? "unknown"}`;
 }
 
+function extractRequiresActionDetails(parsed: Record<string, unknown>): Record<string, unknown> | null {
+  if (parsed.type !== "control_request") return null;
+  const request = parsed.request;
+  if (!request || typeof request !== "object" || Array.isArray(request)) return null;
+  return {
+    request_id: String(parsed.request_id ?? ""),
+    request: request as Record<string, unknown>,
+  };
+}
+
+function clearRequiresActionDetails(sessionId: string): void {
+  storeUpsertSessionWorker(sessionId, { requiresActionDetails: null });
+}
+
 function isSessionStateEvent(
   parsed: Record<string, unknown>,
   state: "idle" | "running" | "requires_action",
@@ -146,7 +163,15 @@ interface NormalizedEvent {
   data: Record<string, unknown>;
 }
 
-function mapStreamEvent(parsed: Record<string, unknown>): NormalizedEvent[] {
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function mapStreamEvent(
+  parsed: Record<string, unknown>,
+  blockIndexMap?: Map<number, { id: string; name: string }>,
+): NormalizedEvent[] {
   const rawEvent =
     parsed.event && typeof parsed.event === "object"
       ? (parsed.event as Record<string, unknown>)
@@ -165,6 +190,9 @@ function mapStreamEvent(parsed: Record<string, unknown>): NormalizedEvent[] {
         typeof block.id === "string" &&
         typeof block.name === "string"
       ) {
+        if (blockIndexMap && typeof rawEvent.index === "number") {
+          blockIndexMap.set(rawEvent.index, { id: block.id, name: block.name });
+        }
         return [
           {
             type: "tool_start",
@@ -203,6 +231,18 @@ function mapStreamEvent(parsed: Record<string, unknown>): NormalizedEvent[] {
           },
         ];
       }
+      if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+        const index = typeof rawEvent.index === "number" ? rawEvent.index : -1;
+        const entry = blockIndexMap?.get(index);
+        if (entry) {
+          return [
+            {
+              type: "tool_input_delta",
+              data: { id: entry.id, partialJson: delta.partial_json },
+            },
+          ];
+        }
+      }
       return [];
     }
     default:
@@ -212,11 +252,12 @@ function mapStreamEvent(parsed: Record<string, unknown>): NormalizedEvent[] {
 
 function mapSubprocessEventToNormalized(
   parsed: Record<string, unknown>,
+  blockIndexMap?: Map<number, { id: string; name: string }>,
 ): NormalizedEvent[] {
   const type = parsed.type as string;
 
   if (type === "stream_event") {
-    return mapStreamEvent(parsed);
+    return mapStreamEvent(parsed, blockIndexMap);
   }
 
   if (type === "assistant" || type === "partial_assistant") {
@@ -277,6 +318,121 @@ function mapSubprocessEventToNormalized(
         });
       }
     }
+    return events;
+  }
+
+  // Handle user events that contain tool results.
+  // The CLI subprocess emits `type=user` with tool_use_result at top level
+  // and tool_result blocks inside message.content.
+  // The tool_use_result has {stdout, stderr, interrupted, isImage, noOutputExpected}
+  // while message.content has {type: "tool_result", tool_use_id, content, ...}
+  if (type === "user") {
+    const events: NormalizedEvent[] = [];
+
+    // Extract tool result from message.content blocks (most reliable source for IDs)
+    const message =
+      parsed.message && typeof parsed.message === "object"
+        ? (parsed.message as Record<string, unknown>)
+        : null;
+    const content = Array.isArray(message?.content)
+      ? (message!.content as Array<Record<string, unknown>>)
+      : [];
+    const toolResultBlock = content.find(
+      (block) =>
+        block &&
+        typeof block === "object" &&
+        block.type === "tool_result",
+    ) as Record<string, unknown> | undefined;
+    const toolCallIdFromBlock =
+      typeof toolResultBlock?.tool_use_id === "string"
+        ? toolResultBlock.tool_use_id
+        : typeof toolResultBlock?.id === "string"
+          ? toolResultBlock.id
+          : "";
+    const toolCallIdFromIndex =
+      typeof parsed.index === "number"
+        ? blockIndexMap?.get(parsed.index)?.id ?? ""
+        : "";
+
+    // Also get the top-level tool_use_result for stdout/stderr
+    const tur = parsed.tool_use_result as Record<string, unknown> | undefined;
+    const toolResultText = tur
+      ? extractToolResultText(tur.stdout ?? tur.stderr ?? tur.content ?? tur.text ?? tur.output)
+      : "";
+    const toolCallIdFallback =
+      toolCallIdFromBlock ||
+      toolCallIdFromIndex ||
+      String(parsed.parent_tool_use_id ?? tur?.tool_use_id ?? tur?.id ?? "");
+
+    if (tur) {
+      const stdout = extractToolResultText(tur.stdout);
+      if (stdout) {
+        events.push({
+          type: "tool_output_delta",
+          data: {
+            toolCallId: toolCallIdFallback,
+            id: toolCallIdFallback,
+            stream: "stdout",
+            chunk: stdout,
+          },
+        });
+      }
+
+      const stderr = extractToolResultText(tur.stderr);
+      if (stderr) {
+        events.push({
+          type: "tool_output_delta",
+          data: {
+            toolCallId: toolCallIdFallback,
+            id: toolCallIdFallback,
+            stream: "stderr",
+            chunk: stderr,
+          },
+        });
+      }
+    }
+
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      if (block.type === "tool_result") {
+        const toolCallId =
+          typeof block.tool_use_id === "string"
+            ? block.tool_use_id
+            : typeof block.id === "string"
+              ? block.id
+              : toolCallIdFallback;
+        // Use result from block content, or fall back to top-level tool_use_result stdout
+        const blockResult = extractToolResultText(
+          (block as { content?: unknown; text?: unknown }).content ?? block.text,
+        );
+        events.push({
+          type: "tool_result",
+          data: {
+            toolCallId,
+            id: toolCallId,
+            result: blockResult || toolResultText,
+            exitCode: Boolean(block.is_error ?? (block as Record<string, unknown>).isError) ? 1 : 0,
+            timeDisplay: "",
+          },
+        });
+      }
+    }
+
+    // Fallback: if no tool_result blocks found but we have top-level tool_use_result
+    if (events.length === 0 && tur) {
+      const toolCallId = toolCallIdFallback;
+      events.push({
+        type: "tool_result",
+        data: {
+          toolCallId,
+          id: toolCallId,
+          result: toolResultText,
+          exitCode: Boolean(tur.is_error ?? tur.isError) ? 1 : 0,
+          timeDisplay: "",
+        },
+      });
+    }
+
     return events;
   }
 
@@ -392,6 +548,9 @@ class SubprocessHandleImpl implements SubprocessHandle {
   private sawTextPartial = false;
   private sawThinkingPartial = false;
   private streamedToolIds = new Set<string>();
+  private toolStartTimes = new Map<string, number>();
+  private blockIndexMap = new Map<number, { id: string; name: string }>();
+  private activeToolId: string | null = null;
 
   constructor(sessionId: string, child: ChildProcess, cwd: string) {
     this.sessionId = sessionId;
@@ -408,6 +567,12 @@ class SubprocessHandleImpl implements SubprocessHandle {
               ? "completed"
               : "failed";
 
+        updateSessionStatus(
+          sessionId,
+          status === "completed" ? "idle" : status === "interrupted" ? "interrupted" : "interrupted",
+        );
+        clearRequiresActionDetails(sessionId);
+
         if (status !== "completed") {
           publishSessionEvent(
             sessionId,
@@ -423,7 +588,15 @@ class SubprocessHandleImpl implements SubprocessHandle {
         publishSessionEvent(
           sessionId,
           "session_ended",
-          { sessionId, reason: status === "completed" ? "completed" : "error" },
+          {
+            sessionId,
+            reason:
+              status === "completed"
+                ? "completed"
+                : status === "interrupted"
+                  ? "killed"
+                  : "error",
+          },
           "outbound",
         );
 
@@ -466,7 +639,25 @@ class SubprocessHandleImpl implements SubprocessHandle {
   private watchStderr(): void {
     if (!this.child.stderr) return;
     const rl = createInterface({ input: this.child.stderr });
-    rl.on("line", (line) => this.captureStderr(line));
+    rl.on("line", (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      this.captureStderr(line);
+      // Publish live stderr as tool_output_delta if a tool is currently running
+      if (this.activeToolId) {
+        publishSessionEvent(
+          this.sessionId,
+          "tool_output_delta",
+          {
+            toolCallId: this.activeToolId,
+            id: this.activeToolId,
+            stream: "stderr",
+            chunk: trimmed,
+          },
+          "outbound",
+        );
+      }
+    });
   }
 
   private captureStderr(line: string): void {
@@ -476,6 +667,10 @@ class SubprocessHandleImpl implements SubprocessHandle {
     if (this.stderrLines.length > STDERR_LINE_LIMIT) this.stderrLines.shift();
   }
 
+  private mapStreamEventWithTracking(parsed: Record<string, unknown>): NormalizedEvent[] {
+    return mapStreamEvent(parsed, this.blockIndexMap);
+  }
+
   /**
    * Translate a raw subprocess NDJSON event into normalized events and publish
    * to the EventBus as outbound. Applies deduplication so that final `assistant`
@@ -483,6 +678,24 @@ class SubprocessHandleImpl implements SubprocessHandle {
    */
   private onSubprocessEvent(parsed: Record<string, unknown>): void {
     const type = parsed.type as string;
+
+    if (isSessionStateEvent(parsed, "running")) {
+      updateSessionStatus(this.sessionId, "running");
+    } else if (isSessionStateEvent(parsed, "requires_action")) {
+      updateSessionStatus(this.sessionId, "requires_action");
+    } else if (isSessionStateEvent(parsed, "idle")) {
+      updateSessionStatus(this.sessionId, "idle");
+      clearRequiresActionDetails(this.sessionId);
+    }
+
+    const requiresActionDetails = extractRequiresActionDetails(parsed);
+    if (requiresActionDetails) {
+      storeUpsertSessionWorker(this.sessionId, { requiresActionDetails });
+    }
+
+    if (parsed.type === "control_response") {
+      clearRequiresActionDetails(this.sessionId);
+    }
 
     // Track token usage from result events
     if (type === "result") {
@@ -494,27 +707,37 @@ class SubprocessHandleImpl implements SubprocessHandle {
     }
 
     if (type === "stream_event") {
-      const events = mapSubprocessEventToNormalized(parsed);
+      const events = this.mapStreamEventWithTracking(parsed);
       for (const event of events) {
         if (event.type === "content_delta") this.sawTextPartial = true;
         if (event.type === "thinking_delta") this.sawThinkingPartial = true;
-        if (event.type === "tool_start") this.streamedToolIds.add(event.data.id as string);
+        if (event.type === "tool_start") {
+          const id = event.data.id as string;
+          this.streamedToolIds.add(id);
+          this.toolStartTimes.set(id, Date.now());
+          this.activeToolId = id;
+        }
+        if (event.type === "tool_result") {
+          const id = (event.data.toolCallId ?? event.data.id) as string;
+          const started = this.toolStartTimes.get(id);
+          if (started) {
+            event.data.timeDisplay = formatElapsed(Date.now() - started);
+            this.toolStartTimes.delete(id);
+          }
+          if (this.activeToolId === id) this.activeToolId = null;
+        }
         publishSessionEvent(this.sessionId, event.type, event.data, "outbound");
       }
       return;
     }
 
     if (type === "assistant" || type === "partial_assistant") {
-      const events = mapSubprocessEventToNormalized(parsed).filter((event) => {
+      const events = mapSubprocessEventToNormalized(parsed, this.blockIndexMap).filter((event) => {
         if (this.sawThinkingPartial && event.type === "thinking_delta") return false;
         if (this.sawTextPartial && event.type === "content_delta") return false;
         if (
-          (event.type === "tool_start" || event.type === "tool_result") &&
-          this.streamedToolIds.has(
-            event.type === "tool_start"
-              ? (event.data.id as string)
-              : ((event.data.toolCallId ?? event.data.id) as string) ?? "",
-          )
+          event.type === "tool_start" &&
+          this.streamedToolIds.has(event.data.id as string)
         ) {
           return false;
         }
@@ -525,6 +748,20 @@ class SubprocessHandleImpl implements SubprocessHandle {
       this.sawThinkingPartial = false;
       this.streamedToolIds.clear();
       for (const event of events) {
+        if (event.type === "tool_start") {
+          const id = event.data.id as string;
+          this.toolStartTimes.set(id, Date.now());
+          this.activeToolId = id;
+        }
+        if (event.type === "tool_result") {
+          const id = (event.data.toolCallId ?? event.data.id) as string;
+          const started = this.toolStartTimes.get(id);
+          if (started) {
+            event.data.timeDisplay = formatElapsed(Date.now() - started);
+            this.toolStartTimes.delete(id);
+          }
+          if (this.activeToolId === id) this.activeToolId = null;
+        }
         publishSessionEvent(this.sessionId, event.type, event.data, "outbound");
       }
       return;
@@ -536,8 +773,31 @@ class SubprocessHandleImpl implements SubprocessHandle {
       this.streamedToolIds.clear();
     }
 
-    const events = mapSubprocessEventToNormalized(parsed);
+    const events = mapSubprocessEventToNormalized(parsed, this.blockIndexMap);
     for (const event of events) {
+      if (event.type === "tool_start") {
+        const id = event.data.id as string;
+        this.toolStartTimes.set(id, Date.now());
+        this.activeToolId = id;
+      }
+      if (
+        event.type === "tool_output_delta" &&
+        (!event.data.toolCallId || !event.data.id) &&
+        this.toolStartTimes.size === 1
+      ) {
+        const [activeToolId] = this.toolStartTimes.keys();
+        event.data.toolCallId = activeToolId;
+        event.data.id = activeToolId;
+      }
+      if (event.type === "tool_result") {
+        const id = (event.data.toolCallId ?? event.data.id) as string;
+        const started = this.toolStartTimes.get(id);
+        if (started) {
+          event.data.timeDisplay = formatElapsed(Date.now() - started);
+          this.toolStartTimes.delete(id);
+        }
+        if (this.activeToolId === id) this.activeToolId = null;
+      }
       publishSessionEvent(this.sessionId, event.type, event.data, "outbound");
     }
   }
@@ -556,6 +816,9 @@ class SubprocessHandleImpl implements SubprocessHandle {
     if (marksTurnStarted(parsed)) pending.started = true;
     if (pending.started && isSessionStateEvent(parsed, "idle")) {
       this.resolvePendingTurn("idle");
+    }
+    if (pending.started && isSessionStateEvent(parsed, "requires_action")) {
+      this.resolvePendingTurn("requires_action");
     }
   }
 
@@ -601,14 +864,10 @@ class SubprocessHandleImpl implements SubprocessHandle {
       const waitForTurn = this.waitForTurnCompletion();
       this.writeStdin(data);
       const outcome = await Promise.race([waitForTurn, this.done]);
-      if (outcome !== "result" && outcome !== "idle" && outcome !== "error") {
-        throw new Error(
-          formatFailureMessage(
-            this.stderrLines,
-            this.child.exitCode,
-            this.child.signalCode as NodeJS.Signals | null,
-          ),
-        );
+      if (outcome !== "result" && outcome !== "idle" && outcome !== "error" && outcome !== "requires_action") {
+        logError("[SubprocessManager] Unexpected turn completion outcome:", outcome);
+        // Don't crash the server - just log and return
+        return;
       }
     });
     this.messageChain = run.catch(() => undefined);
@@ -649,7 +908,6 @@ class SubprocessHandleImpl implements SubprocessHandle {
 function spawnSubprocess(sessionId: string, cwd: string, resume: boolean): ChildProcess {
   // Re-exec the same bun binary with the CLI entrypoint
   const execPath = process.execPath; // e.g. /usr/local/bin/bun
-  const cliEntry = process.argv[1]!; // the RCS entrypoint — we need the CLI path
 
   // The CLI entrypoint relative to project root
   // Walk up from __dirname (packages/remote-control-server/src/services/) to root
@@ -657,13 +915,12 @@ function spawnSubprocess(sessionId: string, cwd: string, resume: boolean): Child
   const { fileURLToPath } = require("url") as typeof import("url");
   // __dirname in ESM context
   const serviceDir = dirname(fileURLToPath(import.meta.url));
-  const projectRoot = resolve(serviceDir, "../../../../..");
+  const projectRoot = resolve(serviceDir, "../../../..");
   const cliPath = resolve(projectRoot, "src/entrypoints/cli.tsx");
 
   const args = [
-    "run",
-    "--smol",
-    cliPath,
+    "--smol",          // bun flag for faster startup
+    cliPath,           // the CLI entrypoint
     "--print",
     "--verbose",
     "--include-partial-messages",
@@ -705,6 +962,7 @@ class SubprocessManager {
     const child = spawnSubprocess(sessionId, cwd, resume);
     const handle = new SubprocessHandleImpl(sessionId, child, cwd);
     this.handles.set(sessionId, handle);
+    updateSessionStatus(sessionId, "running");
 
     try {
       await handle.waitForReady();

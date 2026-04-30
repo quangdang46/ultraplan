@@ -53,6 +53,17 @@ export type ServerEvent =
   | { type: 'content_block'; data: { block: ContentBlock } }
   | { type: 'message_end'; data: { id: string; usage: UsageStats } }
   | { type: 'tool_start'; data: { id: string; name: string; input: Record<string, unknown> } }
+  | { type: 'tool_input_delta'; data: { id: string; partialJson: string } }
+  | {
+      type: 'tool_output_delta'
+      data: {
+        id?: string
+        toolCallId?: string
+        stream?: 'stdout' | 'stderr'
+        chunk: string
+        outputLine?: string
+      }
+    }
   | { type: 'tool_end'; data: { id: string } }
   | {
       type: 'tool_result'

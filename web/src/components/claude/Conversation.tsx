@@ -4,6 +4,7 @@ import { useStreamContext } from '../../hooks/useStreamContext';
 import { ConversationToolItem } from './ConversationToolItem';
 import { PermissionPanel } from './PermissionPanel';
 import { ThinkingIndicator } from './ThinkingIndicator';
+import { ThinkingCollapsible } from './ThinkingCollapsible';
 
 export function Conversation() {
   const {
@@ -31,7 +32,15 @@ export function Conversation() {
           </div>
         )}
 
-        {messages.map((msg) => (
+        {messages.map((msg, index) => {
+          const isLastMessage = index === messages.length - 1;
+          const showStreamingDot =
+            isStreaming &&
+            isLastMessage &&
+            msg.role === 'assistant' &&
+            Boolean(msg.content);
+
+          return (
           <div
             key={msg.id}
             className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
@@ -43,14 +52,10 @@ export function Conversation() {
                 ))}
 
               {msg.role === 'assistant' && msg.thinking && (
-                <div className="rounded-lg border border-[#eadfd6] bg-[#f8f2ed] px-3 py-2 text-charcoal-warm">
-                  <div className="mb-1 text-[10.5px] font-semibold tracking-wide text-[#8c6a5b]">
-                    Thinking
-                  </div>
-                  <div className="text-xs leading-[1.55] [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_code]:whitespace-pre-wrap [&_code]:break-words">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.thinking}</ReactMarkdown>
-                  </div>
-                </div>
+                <ThinkingCollapsible
+                  thinking={msg.thinking}
+                  streamingEndedAt={msg.streamingEndedAt}
+                />
               )}
 
               {msg.role === 'user' && msg.quote?.text && (
@@ -66,7 +71,15 @@ export function Conversation() {
 
               {msg.artifacts && msg.artifacts.length > 0 && (
                 <div className="grid gap-2 sm:grid-cols-2">
-                  {msg.artifacts.map((artifact) => (
+                  {msg.artifacts.map((artifact) => {
+                    // Check if this is an image artifact
+                    const isImage = artifact.type === 'image' || artifact.type === 'Image';
+                    const isBase64 = artifact.data && artifact.data.length > 0;
+                    const imageSrc = isBase64
+                      ? `data:${artifact.mimeType || 'image/png'};base64,${artifact.data}`
+                      : artifact.url || null;
+
+                    return (
                     <div
                       key={artifact.id}
                       className="rounded-lg border border-[#e6d7c4] bg-white/70 px-3 py-2 text-charcoal-warm"
@@ -74,12 +87,30 @@ export function Conversation() {
                       <div className="text-[10.5px] font-semibold tracking-wide text-[#8c6a5b]">
                         {artifact.label}
                       </div>
-                      {artifact.detail && (
+                      {isImage && imageSrc ? (
+                        // Render image with error handling
+                        <div className="mt-1">
+                          <img
+                            src={imageSrc}
+                            alt={artifact.detail || artifact.label}
+                            className="max-w-full h-auto rounded-md"
+                            onError={(e) => {
+                              // Fallback to URL or text on error
+                              const target = e.currentTarget;
+                              if (artifact.url && target.src !== artifact.url) {
+                                target.src = artifact.url;
+                              } else {
+                                target.style.display = 'none';
+                              }
+                            }}
+                          />
+                        </div>
+                      ) : artifact.detail ? (
                         <div className="mt-1 text-xs leading-[1.5]">
                           {artifact.detail}
                         </div>
-                      )}
-                      {artifact.url && (
+                      ) : null}
+                      {artifact.url && !isBase64 && (
                         <a
                           href={artifact.url}
                           target="_blank"
@@ -90,7 +121,8 @@ export function Conversation() {
                         </a>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
@@ -102,14 +134,14 @@ export function Conversation() {
                       : 'bg-warm-sand text-dark-surface prose-stone'
                   }`}
                 >
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{showStreamingDot ? `● ${msg.content}` : msg.content}</ReactMarkdown>
                 </div>
               ) : isStreaming && msg.role === 'assistant' && !msg.thinking ? (
                 <ThinkingIndicator />
               ) : null}
             </div>
           </div>
-        ))}
+        );})}
 
         {streamError && (
           <div className="text-red-500 text-center p-2 bg-red-50 rounded w-full">

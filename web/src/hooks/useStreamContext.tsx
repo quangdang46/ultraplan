@@ -7,6 +7,7 @@ interface StreamContextValue {
   isStreaming: ReturnType<typeof useStream>['isStreaming'];
   error: ReturnType<typeof useStream>['error'];
   pendingPermissions: ReturnType<typeof useStream>['pendingPermissions'];
+  connectionState: ReturnType<typeof useStream>['connectionState'];
   sendMessage: ReturnType<typeof useStream>['sendMessage'];
   respondToPermission: ReturnType<typeof useStream>['respondToPermission'];
   attachSession: ReturnType<typeof useStream>['attachSession'];

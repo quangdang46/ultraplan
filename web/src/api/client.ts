@@ -101,7 +101,13 @@ class ApiClient {
       headers,
     });
 
-    const data = await response.json();
+    const text = await response.text();
+    let data: any = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { error: 'INVALID_JSON', message: text || 'Invalid JSON response' };
+    }
 
     if (!response.ok) {
       const payload = data as ApiError & { auth_domain?: string };
@@ -155,7 +161,10 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      const error = await response.json();
+      const error = await response.json().catch(async () => {
+        const text = await response.text().catch(() => '');
+        return { error: text || 'Stream request failed' };
+      });
       throw new Error(error.error || 'Stream request failed');
     }
 
@@ -188,13 +197,16 @@ class ApiClient {
 
             try {
               const parsed = JSON.parse(dataStr);
-              const event: ServerEvent = {
-                type: (currentEventType || parsed.type) as ServerEvent['type'],
-                data: parsed.data ?? parsed,
-              };
+              // Server always sends `event: message`, so we must prioritize parsed.type
+              const eventType = (parsed.type || currentEventType) as ServerEvent['type'];
+              // RCS SSE sends { type, payload, direction, seqNum }
+              // ServerEvent expects { type, data }
+              const data = parsed.data ?? parsed.payload ?? parsed;
+              const event: ServerEvent = { type: eventType, data };
+              console.log("[streamChat] Yielding event:", eventType, data);
               yield event;
-            } catch {
-              // Skip invalid JSON
+            } catch (err) {
+              console.error("[streamChat] JSON parse error on data:", dataStr, err);
             }
           }
         }
@@ -207,13 +219,23 @@ class ApiClient {
   async *streamSessionEvents(
     sessionId: string,
     options: { signal?: AbortSignal } = {},
+    fromSeqNum?: number,
   ): AsyncGenerator<ServerEvent> {
     if (!this.apiKey) {
       throw new Error('Not authenticated');
     }
 
+    const params = new URLSearchParams();
+    if (typeof fromSeqNum === 'number' && fromSeqNum > 0) {
+      params.set('from', String(fromSeqNum));
+    }
+    const query = params.toString();
+    const url = query
+      ? `${this.baseUrl}/api/sessions/${sessionId}/stream?${query}`
+      : `${this.baseUrl}/api/sessions/${sessionId}/stream`;
+
     const response = await fetch(
-      `${this.baseUrl}/api/sessions/${sessionId}/stream`,
+      url,
       {
         method: 'GET',
         signal: options.signal,
@@ -236,6 +258,7 @@ class ApiClient {
     const decoder = new TextDecoder();
     let buffer = '';
     let currentEventType = '';
+    let currentEventId = '';
 
     try {
       while (true) {
@@ -247,6 +270,10 @@ class ApiClient {
         buffer = lines.pop() || '';
 
         for (const line of lines) {
+          if (line.startsWith('id: ')) {
+            currentEventId = line.slice(4).trim();
+            continue;
+          }
           if (line.startsWith('event: ')) {
             currentEventType = line.slice(7).trim();
             continue;
@@ -257,13 +284,18 @@ class ApiClient {
 
             try {
               const parsed = JSON.parse(dataStr);
-              const event: ServerEvent = {
-                type: (currentEventType || parsed.type) as ServerEvent['type'],
-                data: parsed.data ?? parsed,
-              };
+              const eventType = (parsed.type || currentEventType) as ServerEvent['type'];
+              const data = parsed.data ?? parsed.payload ?? parsed;
+              const event: ServerEvent & { seqNum?: number } = { type: eventType, data };
+              const seqNum = Number(currentEventId);
+              if (Number.isFinite(seqNum) && seqNum > 0) {
+                event.seqNum = seqNum;
+              }
+              console.log("[streamSessionEvents] Yielding event:", eventType, data);
               yield event;
-            } catch {
-              // Skip invalid JSON
+              currentEventId = '';
+            } catch (err) {
+              console.error("[streamSessionEvents] JSON parse error on data:", dataStr, err);
             }
           }
         }
@@ -368,6 +400,117 @@ class ApiClient {
     return this.request<ExecuteCommandResponse>(url, {
       method: 'POST',
       body: JSON.stringify(payload),
+    });
+  }
+
+  // Health check (includes server epoch for restart detection)
+  async getHealth(): Promise<{ status: string; version: string; epoch: number }> {
+    const response = await fetch(`${this.baseUrl}/health`);
+    return response.json();
+  }
+
+  // Context window breakdown
+  async getContext(sessionId: string): Promise<{
+    maxTokens: number;
+    totalInput: number;
+    totalOutput: number;
+    breakdown: Array<{ category: string; tokens: number; pct: number }>;
+    usedPct: number;
+  }> {
+    return this.request(`/api/context?sessionId=${encodeURIComponent(sessionId)}`);
+  }
+
+  // Usage + cost
+  async getUsage(): Promise<{
+    totalInput: number;
+    totalOutput: number;
+    cost: { input: number; output: number; total: number };
+    rateLimit: {
+      sessionLimit: number;
+      sessionUsed: number;
+      sessionPct: number;
+      resetAt: string | null;
+    };
+  }> {
+    return this.request('/api/usage');
+  }
+
+  // Prompt history
+  async getHistory(limit?: number): Promise<{
+    prompts: Array<{ text: string; sessionId: string; timestamp: string }>;
+  }> {
+    const params = limit ? `?limit=${limit}` : '';
+    return this.request(`/api/history${params}`);
+  }
+
+  // Workspace search
+  async searchWorkspace(query: string, limit?: number): Promise<{
+    results: Array<{
+      file: string;
+      line: number;
+      col?: number;
+      text: string;
+      matchStart?: number;
+      matchEnd?: number;
+    }>;
+  }> {
+    const params = new URLSearchParams({ q: query });
+    if (limit) params.set('limit', String(limit));
+    return this.request(`/api/search?${params.toString()}`);
+  }
+
+  // Rewind last turn
+  async rewindSession(sessionId: string): Promise<void> {
+    await this.request<{ success: boolean }>(`/api/sessions/${sessionId}/rewind`, {
+      method: 'POST',
+      body: '{}',
+    });
+  }
+
+  // Resume interrupted session
+  async resumeSession(sessionId: string): Promise<{ success: boolean; status: string }> {
+    return this.request<{ success: boolean; status: string }>(`/api/sessions/${sessionId}/resume`, {
+      method: 'POST',
+    });
+  }
+
+  // MCP server management
+  async getMcpServers(cwd: string): Promise<{
+    servers: Array<{
+      name: string;
+      command: string;
+      args: string[];
+      env: Record<string, string>;
+      status: string;
+    }>;
+  }> {
+    return this.request(`/api/mcp?cwd=${encodeURIComponent(cwd)}`);
+  }
+
+  async addMcpServer(name: string, command: string, cwd: string, args?: string[], env?: Record<string, string>): Promise<void> {
+    await this.request('/api/mcp', {
+      method: 'POST',
+      body: JSON.stringify({ name, command, cwd, args: args ?? [], env: env ?? {} }),
+    });
+  }
+
+  async deleteMcpServer(name: string, cwd: string): Promise<void> {
+    await this.request(`/api/mcp/${encodeURIComponent(name)}?cwd=${encodeURIComponent(cwd)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // Memory files (CLAUDE.md)
+  async getMemoryFiles(): Promise<{
+    files: Array<{ path: string; content: string }>;
+  }> {
+    return this.request('/api/memory');
+  }
+
+  async saveMemoryFile(path: string, content: string): Promise<void> {
+    await this.request('/api/memory', {
+      method: 'PUT',
+      body: JSON.stringify({ path, content }),
     });
   }
 }

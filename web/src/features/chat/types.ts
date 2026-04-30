@@ -25,6 +25,8 @@ export type ToolItem = {
   exitCode?: number;
   timeDisplay?: string;
   elapsedMs?: number;
+  liveOutput?: string;
+  liveErrorOutput?: string;
 };
 
 export type TranscriptArtifact = {
@@ -33,6 +35,9 @@ export type TranscriptArtifact = {
   label: string;
   detail?: string;
   url?: string;
+  // Image-specific fields
+  mimeType?: string;
+  data?: string; // base64 encoded image data
 };
 
 export type PendingPermission = {
@@ -41,6 +46,7 @@ export type PendingPermission = {
   toolInput: Record<string, unknown>;
   description?: string;
   subtype?: string;
+  alwaysAllow?: boolean;
 };
 
 export interface Message {
@@ -51,6 +57,7 @@ export interface Message {
   toolCalls: ToolItem[];
   artifacts?: TranscriptArtifact[];
   quote?: ReplyQuote;
+  streamingEndedAt?: number;
 }
 
 export interface StreamState {
@@ -61,4 +68,5 @@ export interface StreamState {
   pendingPermissions: PendingPermission[];
   error: string | null;
   pendingRouteSync: boolean;
+  connectionState?: 'connected' | 'reconnecting' | 'restarted' | 'interrupted' | 'failed';
 }

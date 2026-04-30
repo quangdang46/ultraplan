@@ -17,8 +17,12 @@ const MAX_EVENTS_PER_BUS = 5000;
 export class EventBus {
   private subscribers = new Set<Subscriber>();
   private events: SessionEvent[] = [];
-  private seqNum = 0;
+  private seqNum: number;
   private closed = false;
+
+  constructor(initialSeqNum = 0) {
+    this.seqNum = initialSeqNum;
+  }
 
   subscribe(callback: Subscriber): () => void {
     this.subscribers.add(callback);
@@ -29,13 +33,14 @@ export class EventBus {
     return this.subscribers.size;
   }
 
-  publish(event: Omit<SessionEvent, "seqNum" | "createdAt">): SessionEvent {
+  publish(event: Omit<SessionEvent, "seqNum" | "createdAt"> & Partial<Pick<SessionEvent, "seqNum" | "createdAt">>): SessionEvent {
     if (this.closed) throw new Error("EventBus is closed");
     const full: SessionEvent = {
       ...event,
-      seqNum: ++this.seqNum,
-      createdAt: Date.now(),
+      seqNum: event.seqNum ?? ++this.seqNum,
+      createdAt: event.createdAt ?? Date.now(),
     };
+    this.seqNum = Math.max(this.seqNum, full.seqNum);
     this.events.push(full);
     // Evict oldest events when exceeding limit
     if (this.events.length > MAX_EVENTS_PER_BUS) {
@@ -74,10 +79,10 @@ export class EventBus {
 /** Global registry of per-session event buses */
 const buses = new Map<string, EventBus>();
 
-export function getEventBus(sessionId: string): EventBus {
+export function getEventBus(sessionId: string, initialSeqNum = 0): EventBus {
   let bus = buses.get(sessionId);
   if (!bus) {
-    bus = new EventBus();
+    bus = new EventBus(initialSeqNum);
     buses.set(sessionId, bus);
   }
   return bus;
