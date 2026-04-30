@@ -52,7 +52,7 @@ export const DEFAULT_BUILD_FEATURES = [
     'HISTORY_SNIP',                // 历史消息裁剪，压缩上下文窗口
     'CONTEXT_COLLAPSE',            // 上下文折叠，自动压缩旧消息
     'MONITOR_TOOL',                // Monitor 工具，流式监控后台进程输出
-    'FORK_SUBAGENT',               // Fork 子代理，在隔离上下文中并行执行任务
+    // 'FORK_SUBAGENT',            // 已禁用：启用后 prompt 引导模型用 fork（继承父模型）替代 Explore（haiku），导致探索任务使用同等级模型
     // 'UDS_INBOX',                   // inbox 数组只增不减（非 GB 级主因）
     'KAIROS',                      // Kairos 定时任务系统核心
     // 'COORDINATOR_MODE',         // 已禁用：AgentSummary 30s fork 循环，GB 级泄露主因
@@ -66,9 +66,16 @@ export const DEFAULT_BUILD_FEATURES = [
     'COMMIT_ATTRIBUTION',          // Git 提交归属追踪（记录 AI 辅助贡献）
     // Server mode (claude server / claude open)
     'DIRECT_CONNECT',              // 直连模式（claude server / claude open）
-    // Skill search & learning
-    'EXPERIMENTAL_SKILL_SEARCH',   // 实验性技能搜索（DiscoverSkills）
-    // 'SKILL_LEARNING',              // projectContext cache 无淘汰机制（非 GB 级主因）
+    // Skill search & learning — feature flags compiled in (so the slash
+    // commands /skill-* etc. exist), but the runtime "enabled" toggle
+    // defaults to OFF (see featureCheck.ts). Operators turn on via the
+    // slash-command toggle or env vars (SKILL_SEARCH_ENABLED=1,
+    // SKILL_LEARNING_ENABLED=1). Rationale: bounded caches added on
+    // this branch (see docs/agent/sur-skill-overflow-bugs.md) close the
+    // overflow risk, but Haiku-on-first-Chinese-query and disk-side
+    // observation accumulation remain operator-discretion concerns.
+    // 'EXPERIMENTAL_SKILL_SEARCH',
+    // 'SKILL_LEARNING',
     // P3: poor mode
     'POOR',                        // 穷鬼模式，跳过 extract_memories/prompt_suggestion 减少消耗
     // Team Memory
