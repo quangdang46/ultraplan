@@ -110,7 +110,7 @@ export function useStream() {
   const toolStartTimesRef = useRef<Map<string, number>>(new Map());
   const toolTimerRef = useRef<number | null>(null);
   const lastSeqNumRef = useRef<number>(0);
-  const serverEpochRef = useRef<number | null>(null);
+  const processedSeqNumsRef = useRef<Set<number>>(new Set());
   const client = getApiClient();
 
   const stopToolTimer = useCallback(() => {
@@ -167,6 +167,21 @@ export function useStream() {
   }, [stopToolTimer]);
 
   const applyEvent = useCallback((event: ServerEvent) => {
+    // Deduplicate by seqNum if available
+    const seqNum = (event as unknown as { seqNum?: number }).seqNum;
+    if (typeof seqNum === 'number' && seqNum > 0) {
+      if (processedSeqNumsRef.current.has(seqNum)) {
+        console.log('[useStream] event already processed, skipping:', event.type, seqNum);
+        return;
+      }
+      processedSeqNumsRef.current.add(seqNum);
+      // Keep set bounded
+      if (processedSeqNumsRef.current.size > 10000) {
+        const arr = Array.from(processedSeqNumsRef.current);
+        processedSeqNumsRef.current = new Set(arr.slice(-5000));
+      }
+    }
+
     console.log("[useStream] applyEvent:", event.type, event.data);
     switch (event.type) {
       case 'session_created': {
@@ -185,12 +200,14 @@ export function useStream() {
       case 'content_delta': {
         const rawDelta = (event.data as any)?.raw?.delta;
         const textDelta = event.data.delta?.text || rawDelta?.text || '';
+        if (!textDelta) break;
+
         setState((s) => {
           const messages = [...s.messages];
           const lastMsg = messages[messages.length - 1];
           if (!lastMsg || lastMsg.role !== 'assistant') {
             messages.push({
-              id: `assistant_stream_${Date.now()}`,
+              id: `assistant_stream_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
               role: 'assistant',
               content: textDelta,
               toolCalls: [],
@@ -216,17 +233,16 @@ export function useStream() {
           const lastMsg = messages[messages.length - 1];
           if (!lastMsg || lastMsg.role !== 'assistant') {
             messages.push({
-              id: `assistant_thinking_${Date.now()}`,
+              id: `assistant_thinking_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
               role: 'assistant',
               content: '',
               thinking: thinkingDelta,
               toolCalls: [],
             });
           } else {
-            // Replace thinking content so only the latest block is shown
             messages[messages.length - 1] = {
               ...lastMsg,
-              thinking: thinkingDelta,
+              thinking: `${lastMsg.thinking ?? ''}${thinkingDelta}`,
             };
           }
           return { ...s, isStreaming: true, messages };
@@ -284,7 +300,7 @@ export function useStream() {
 
           if (!lastMsg || lastMsg.role !== 'assistant') {
             messages.push({
-              id: `assistant_block_${Date.now()}`,
+              id: `assistant_block_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
               role: 'assistant',
               content: text || '',
               toolCalls: [],
@@ -308,6 +324,13 @@ export function useStream() {
       case 'tool_start': {
         const rawData = (event.data as any)?.raw || {};
         const toolData = { ...rawData, ...event.data };
+
+        // Deduplicate: skip if we already have this tool
+        if (toolStartTimesRef.current.has(toolData.id)) {
+          console.log('[useStream] tool_start duplicate detected, skipping:', toolData.id);
+          break;
+        }
+
         const startedAt = Date.now();
         toolStartTimesRef.current.set(toolData.id, startedAt);
         ensureToolTimer();
@@ -330,7 +353,7 @@ export function useStream() {
           const lastMsg = messages[messages.length - 1];
           if (!lastMsg || lastMsg.role !== 'assistant') {
             messages.push({
-              id: `assistant_tool_${Date.now()}`,
+              id: `assistant_tool_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
               role: 'assistant',
               content: '',
               toolCalls: [toolItem],
@@ -525,9 +548,12 @@ export function useStream() {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
+      // Stop any attachSession stream to prevent dual streams
       if (attachControllerRef.current) {
         attachControllerRef.current.abort();
       }
+      // Clear seqNum dedupe state so events from the aborted stream don't block legitimate events
+      processedSeqNumsRef.current.clear();
 
       abortControllerRef.current = new AbortController();
 
@@ -634,6 +660,7 @@ export function useStream() {
       const maxRetries = 5;
 
       const connect = async () => {
+        let currentRetry = retryCount;
         try {
           const fromSeq = lastSeqNumRef.current;
           for await (const event of client.streamSessionEvents(
@@ -641,7 +668,7 @@ export function useStream() {
             { signal: attachControllerRef.current!.signal },
             fromSeq,
           )) {
-            retryCount = 0;
+            currentRetry = 0;
             setState((s) => ({ ...s, connectionState: 'connected' }));
             const seqNum = (event as unknown as Record<string, unknown>).seqNum;
             if (typeof seqNum === 'number' && seqNum > lastSeqNumRef.current) {
@@ -651,17 +678,19 @@ export function useStream() {
           }
         } catch (err) {
           if (err instanceof Error) {
-            if (err.name === 'AbortError') return;
+            if (err.name === 'AbortError') {
+              return 'aborted';
+            }
             if (err.message === 'SESSION_NOT_ACTIVE') {
               setState((s) => ({ ...s, connectionState: 'interrupted' }));
-              return;
+              return 'interrupted';
             }
           }
 
-          if (retryCount < maxRetries) {
-            retryCount++;
+          if (currentRetry < maxRetries) {
+            currentRetry++;
             setState((s) => ({ ...s, connectionState: 'reconnecting' }));
-            const delay = Math.min(1000 * Math.pow(2, retryCount - 1), 16000);
+            const delay = Math.min(1000 * Math.pow(2, currentRetry - 1), 16000);
             await new Promise((r) => setTimeout(r, delay));
 
             try {
@@ -678,7 +707,9 @@ export function useStream() {
               // ignore health check errors during reconnect
             }
 
-            return connect();
+            retryCount = currentRetry;
+            const result = await connect();
+            return result;
           }
 
           setState((s) => ({
@@ -686,7 +717,9 @@ export function useStream() {
             error: err instanceof Error ? err.message : 'Stream connection failed',
             connectionState: 'failed',
           }));
+          return 'failed';
         }
+        return 'connected';
       };
 
       // Capture initial server epoch
@@ -776,6 +809,7 @@ export function useStream() {
     toolInputBuffersRef.current.clear();
     toolStartTimesRef.current.clear();
     lastSeqNumRef.current = 0;
+    processedSeqNumsRef.current.clear();
     stopToolTimer();
   }, [stopToolTimer]);
 
@@ -783,6 +817,7 @@ export function useStream() {
     toolInputBuffersRef.current.clear();
     toolStartTimesRef.current.clear();
     lastSeqNumRef.current = 0;
+    processedSeqNumsRef.current.clear();
     stopToolTimer();
     setState((s) => ({
       ...s,
@@ -805,6 +840,7 @@ export function useStream() {
     toolInputBuffersRef.current.clear();
     toolStartTimesRef.current.clear();
     lastSeqNumRef.current = 0;
+    processedSeqNumsRef.current.clear();
     stopToolTimer();
     setState((s) => ({
       ...s,
