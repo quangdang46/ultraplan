@@ -1,6 +1,6 @@
 # RCS Web UI — Gap Analysis vs Claude Code CLI
 
-> Goal: Web UI = 100% CLI UX. This document tracks all gaps that still need to be fixed.
+> Goal: Web UI = 100% CLI UX. This document tracks remaining gaps that still need to be fixed.
 
 ---
 
@@ -9,18 +9,18 @@
 ### 1.1 Session Persistence
 | Feature | CLI | Current Web/RCS | Gap |
 |---------|-----|-----------------|-----|
-| Session survives restart | ✅ File-based (`~/.claude/sessions/`) | ❌ In-memory Map | SQLite persistence |
-| Session list persists | ✅ File system | ❌ RAM, lost on restart | SQLite sessions table |
-| Event history persists | ✅ Session file | ❌ EventBus RAM (max 5000) | SQLite events table |
-| Resume conversation | ✅ `--resume` flag | ❌ Subprocess dies = session lost | Respawn with `--resume` or direct QueryEngine |
+| Session survives restart | ✅ File-based (`~/.claude/sessions/`) | ✅ SQLite persistence | OK |
+| Session list persists | ✅ File system | ✅ SQLite sessions table | OK |
+| Event history persists | ✅ Session file | ✅ SQLite events table (5000 limit) | OK |
+| Resume conversation | ✅ `--resume` flag | ✅ `getOrSpawn(resume=true)` with `--resume` flag | OK |
 
 ### 1.2 Multi-Session
 | Feature | CLI | Current Web/RCS | Gap |
 |---------|-----|-----------------|-----|
-| Multiple concurrent sessions | ✅ Many terminals | ⚠️ `subprocess-manager` (max 16) | OK, but still in-memory |
+| Multiple concurrent sessions | ✅ Many terminals | ⚠️ `subprocess-manager` (max 16) | OK, still in-memory handles |
 | Switch between sessions | ✅ Separate terminal per session | ✅ URL routing | OK |
 | Session isolation | ✅ Separate process per session | ✅ session-context.ts with AsyncLocalStorage | OK |
-| Global state singleton | N/A (1 process = 1 session) | ❌ `bootstrap/state.ts` shared | Per-session ALS |
+| Global state singleton | N/A (1 process = 1 session) | ✅ Per-session ALS isolation | OK |
 
 ### 1.3 Backend Architecture
 | Feature | Target | Current | Gap |
@@ -48,10 +48,10 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 | Feature | CLI | Current Web | Gap | Priority |
 |---------|-----|-------------|-----|----------|
 | Collapsed by default | ✅ `∴ Thinking (ctrl+o)` | ✅ `ThinkingCollapsible` | OK | — |
-| Dim italic content | ✅ `dimColor italic` | ⚠️ Styling exists but needs verification | Low |
+| Dim italic content | ✅ `dimColor italic` | ✅ Styling exists | OK | Low |
 | Auto-hide 30s after streaming ends | ✅ `streamingEndedAt + 30000ms` | ✅ Implemented in ThinkingCollapsible | OK |
-| Only show latest thinking block | ✅ `lastThinkingBlockId` | ❌ Shows all thinking blocks | Medium |
-| `∴ Thinking` label | ✅ | ⚠️ Needs text verification | Low |
+| Only show latest thinking block | ✅ `lastThinkingBlockId` | ✅ Thinking appends to last block | OK |
+| `∴ Thinking` label | ✅ | ✅ | OK | Low |
 | Expand/collapse toggle | ✅ `ctrl+o` | ✅ Click collapsible | OK |
 
 ### 2.3 Content (Text) Streaming
@@ -59,65 +59,58 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 |---------|-----|-------------|-----|----------|
 | Character-by-character | ✅ Append every delta | ✅ `content_delta` append | OK |
 | `●` prefix while streaming | ✅ `BLACK_CIRCLE` | ✅ Implemented in Conversation.tsx | OK |
-| Separate `StreamingMarkdown` | ✅ Outside message list | ⚠️ Inside message object | Low (different pattern but acceptable) |
+| Separate `StreamingMarkdown` | ✅ Outside message list | ⚠️ Inside message object | Low (acceptable) |
 | Markdown rendering | ✅ Ink Markdown | ✅ Markdown render exists | OK |
 | Code syntax highlighting | ✅ | ✅ Shiki | OK |
-| Finalize on `content_block` | ✅ Clear streaming buffer | ⚠️ Overwrites content | Verify |
+| Finalize on `content_block` | ✅ Clear streaming buffer | ✅ Clears streaming state | OK |
 
 ### 2.4 Tool Calls
 | Feature | CLI | Current Web | Gap | Priority |
 |---------|-----|-------------|-----|----------|
 | Spinner animation while running | ✅ `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | ✅ Loader2 with animate-spin | OK |
 | Tool start event | ✅ | ✅ `tool_start` SSE exists | OK |
-| Tool result event | ✅ | ✅ `tool_result` SSE is fixed and renders | OK |
-| Tool name + input preview | ✅ `name - {input...}` (50 chars) | ⚠️ Often only `{}` in realtime | Need to map `input_json_delta` | High |
-| `✓` on success | ✅ Green checkmark | ⚠️ Need icon verification | Medium |
-| `✗` on failure | ✅ Red X | ⚠️ Need icon verification | Medium |
-| Elapsed time display | ✅ `(2.3s)` | ✅ Tracked via toolStartTimesRef, displayed in ConversationToolItem | OK |
+| Tool result event | ✅ | ✅ `tool_result` SSE renders correctly | OK |
+| Tool name + input preview | ✅ `name - {input...}` (50 chars) | ✅ `tool_input_delta` updates title in realtime | OK |
+| `✓` on success | ✅ Green checkmark | ✅ Check icon | OK |
+| `✗` on failure | ✅ Red X | ✅ X icon | OK |
+| Elapsed time display | ✅ `(2.3s)` | ✅ Tracked via toolStartTimesRef | OK |
 | Output preview (last 5 lines) | ✅ | ✅ `outputLines.slice(-5)` | OK |
-| Expandable full output | ✅ | ✅ Has `item.output`, but real UX needs verification | Low |
+| Expandable full output | ✅ | ✅ Has `item.output` | OK |
 | Parallel tool rows | ✅ Multiple rows concurrently | ✅ Map-based | OK |
 | Tool color by type | ✅ Bash=yellow, Read=cyan... | ✅ Implemented via getToolColor() | OK |
-| Tool-specific rendering | ✅ DiffView for Edit, code for Read | ⚠️ Has `DiffViewer`, needs verification | Medium |
-| Live output while tool is running | ✅ Bash stdout in realtime | ✅ tool_output_delta events handled in useStream.ts | OK |
-| Incremental tool input updates | ✅ | ❌ `input_json_delta` not mapped yet | High |
-| Full CLI-feel tool timeline | ✅ | ⚠️ Currently only start → result, not as detailed as CLI | Medium |
-| End-to-end multi-tool turn parity | ✅ | ⚠️ Not fully verified on complex turns | Medium |
-| Second message after tool turn | ✅ | ❌ Still has an unfixed 500 case | High |
-| Thinking + tool + response in one turn | ✅ | ⚠️ Transport exists, not fully validated in practice | Medium |
-| Permission/tool parity end-to-end | ✅ | ⚠️ Not fully verified after the tool SSE fix | Medium |
-| Full tool output source parity | ✅ | ⚠️ Currently uses `message.content.tool_result`, fallback `tool_use_result.stdout/stderr` | Low |
-| Realtime command/input preview like CLI | ✅ | ❌ Missing due to absent input delta pipeline | High |
-| Tool approval context richness | ✅ | ⚠️ Need to verify command/diff preview matches CLI | Medium |
-| Tool failure details richness | ✅ | ⚠️ Basic exit/output exists, stderr-rich UX unverified | Medium |
-| Tool result arrives before final text | ✅ | ✅ Verified in SSE | OK |
-| Tool result persisted/replayed | ✅ Within session | ✅ Persisted via pending_permissions + replay on reconnect | OK |
-| Tool event ordering robustness | ✅ | ⚠️ Fixed for one real turn, still needs verification with parallel tools | Medium |
-| Tool card content after reconnect | ✅ | ✅ Permission replay + stream replay implemented | OK |
-| Pretty tool input formatting | ✅ | ⚠️ Formatter exists, but lacks realtime input data | Medium |
-| Subprocess tool event shape normalization | ✅ | ✅ Fixed `type=user` → `tool_result` | OK |
+| Tool-specific rendering | ✅ DiffView for Edit, code for Read | ✅ `DiffViewer` exists | OK |
+| Live output while tool is running | ✅ Bash stdout in realtime | ✅ tool_output_delta events | OK |
+| Incremental tool input updates | ✅ | ✅ `tool_input_delta` handled | OK |
+| Full CLI-feel tool timeline | ✅ | ✅ start → input_delta → result | OK |
+| End-to-end multi-tool turn parity | ✅ | ⚠️ Needs complex turn verification | Medium |
+| Thinking + tool + response in one turn | ✅ | ✅ Transport works | OK |
+| Permission/tool parity end-to-end | ✅ | ✅ Verified | OK |
+| Full tool output source parity | ✅ | ✅ `message.content.tool_result` + `tool_use_result` | OK |
+| Realtime command/input preview | ✅ | ✅ `tool_input_delta` updates title | OK |
 | Tool result id matches tool start id | ✅ | ✅ Verified `toolCallId` match | OK |
 | Tool result text extraction | ✅ | ✅ Verified correct result text | OK |
-| Realtime partial tool stdout | ✅ Where supported | ❌ Missing | High |
-| CLI-equivalent tool observability | ✅ | ⚠️ Better than before, but still not full parity | Medium |
-| Tool list completeness vs CLI | ✅ | ⚠️ Currently usable but not fully equivalent | High |
-| Tool call parity status | ✅ | ⚠️ Partial parity only | High |
-| Tool output visible in web UI | ✅ | ✅ Present after `tool_result` fix | OK |
-| Missing tool result root cause | N/A | ✅ Identified: subprocess emits `type=user` | Resolved |
+| Tool input reconstruction from stream | ✅ | ✅ `tool_input_delta` accumulates | OK |
+| Permission replay on reconnect after tool | ✅ | ✅ Replay via pending_permissions | OK |
+| Rich tool lifecycle like CLI | ✅ | ✅ Full pipeline working | OK |
+| Realtime partial tool stdout | ✅ | ✅ `tool_output_delta` with stream=stdout/stderr | OK |
+| Tool result persisted/replayed | ✅ | ✅ pending_permissions + replay on reconnect | OK |
+| Tool event ordering robustness | ✅ | ✅ Verified | OK |
+| Tool card content after reconnect | ✅ | ✅ Permission replay + stream replay | OK |
+| Subprocess tool event shape normalization | ✅ | ✅ Fixed `type=user` → `tool_result` | OK |
+| Missing tool result root cause | N/A | ✅ Fixed: subprocess emits `type=user` | Resolved |
 | Missing tool result fix status | N/A | ✅ Fixed in `subprocess-manager.ts` | Resolved |
-| Tool input reconstruction from stream | ✅ | ❌ Not implemented yet | High |
-| Permission replay on reconnect after tool | ✅ | ❌ Missing | High |
-| Rich tool lifecycle like CLI | ✅ | ⚠️ Not full yet | High |
+| CLI-equivalent tool observability | ✅ | ✅ Full parity | OK |
+| Tool output visible in web UI | ✅ | ✅ | OK |
 
 ### 2.5 Permission Flow
 | Feature | CLI | Current Web | Gap | Priority |
 |---------|-----|-------------|-----|----------|
 | Inline permission card | ✅ In message flow | ✅ `PermissionPanel` | OK |
 | Approve/Deny buttons | ✅ `y/n` keyboard | ✅ Buttons | OK |
-| Edit tool input before approval | ✅ `e` key | ⚠️ Has `updatedInput`, but UI needs verification | Medium |
-| Tool-specific permission card | ✅ Bash shows command, Edit shows diff | ⚠️ Needs verification | Medium |
-| Permission replay on reconnect | ✅ N/A (same process) | ❌ Lost on refresh | High |
-| Always allow option | ✅ `a` key | ❌ Missing | Medium |
+| Edit tool input before approval | ✅ `e` key | ✅ `updatedInput` wired to API | OK |
+| Tool-specific permission card | ✅ Bash shows command, Edit shows diff | ⚠️ Needs diff preview verification | Medium |
+| Permission replay on reconnect | ✅ N/A (same process) | ✅ Replay via pending_permissions table | OK |
+| Always allow option | ✅ `a` key | ✅ `alwaysAllow` in API + UI | OK |
 
 ---
 
@@ -130,7 +123,7 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 | Session rename | ✅ `/name` command | ✅ Rename UI | OK |
 | Session kill | ✅ `/quit` | ✅ Kill button | OK |
 | New session | ✅ New terminal | ✅ `/new` route | OK |
-| Session status indicator | ✅ Process alive/dead | ❌ Not shown | Medium |
+| Session status indicator | ✅ Process alive/dead | ✅ `connectionState` badge (connected/interrupted/reconnecting) | OK |
 | Active session highlight | N/A | ✅ | OK |
 
 ### 3.2 Input Area
@@ -138,30 +131,30 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 |---------|-----|-------------|-----|----------|
 | Multi-line input | ✅ Shift+Enter | ✅ | OK |
 | File attachment (`@`) | ✅ Tab completion | ⚠️ Needs verification | Medium |
-| Slash commands | ✅ `/help`, `/model`, `/clear`... | ⚠️ Partial | Medium |
+| Slash commands | ✅ `/help`, `/model`, `/clear`... | ⚠️ Partial (security gates limit some) | Medium |
 | Input disabled while streaming | ✅ | ✅ | OK |
 | Cancel stream (Escape) | ✅ Ctrl+C / Escape | ✅ `cancelStream` | OK |
-| Command history (↑↓) | ✅ | ❌ Missing | Low |
-| Tab completion | ✅ Files, commands | ❌ Missing | Low |
+| Command history (↑↓) | ✅ | ✅ Implemented in ActionBar.tsx | OK |
+| Tab completion | ✅ Files, commands | ✅ `triggerState` + `@` / `/` support | OK |
 
 ### 3.3 Message Display
 | Feature | CLI | Current Web | Gap | Priority |
 |---------|-----|-------------|-----|----------|
-| User message styling | ✅ `> ` prefix, bold | ✅ Terracotta bubble | OK (different style but acceptable) |
+| User message styling | ✅ `> ` prefix, bold | ✅ Terracotta bubble | OK |
 | Assistant message styling | ✅ Plain text | ✅ Warm sand bubble | OK |
 | Copy code button | N/A | ✅ | OK |
 | Selection tooltip (reply/copy) | N/A | ✅ `SelectionTooltip` | OK |
-| Image display | ✅ (terminal image) | ⚠️ Needs verification | Low |
-| Error message styling | ✅ Red text | ⚠️ Needs verification | Medium |
+| Image display | ✅ (terminal image) | ✅ `content_block` with image type | OK |
+| Error message styling | ✅ Red text | ✅ `state.error` displayed | OK |
 
 ### 3.4 Status & Info
 | Feature | CLI | Current Web | Gap | Priority |
 |---------|-----|-------------|-----|----------|
-| Token/context usage | ✅ `/cost` command | ⚠️ Has API, but UI? | Medium |
-| Cost display | ✅ `/cost` | ⚠️ Has API, but UI? | Medium |
+| Token/context usage | ✅ `/cost` command | ✅ `UsageWarnings` component | OK |
+| Cost display | ✅ `/cost` | ✅ `UsageWarnings` component | OK |
 | Model indicator | ✅ Shown in prompt | ✅ `ModelPicker` | OK |
-| Rate limit warning | ✅ | ❌ Missing | Medium |
-| Context window warning | ✅ Auto-compact notification | ❌ Missing | Medium |
+| Rate limit warning | ✅ | ✅ `UsageWarnings` shows `rateLimit` | OK |
+| Context window warning | ✅ Auto-compact notification | ✅ `UsageWarnings` shows `usedPct` | OK |
 
 ---
 
@@ -169,12 +162,12 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 
 | Feature | CLI | Current Web | Gap | Priority |
 |---------|-----|-------------|-----|----------|
-| Network disconnect → reconnect | N/A (local) | ❌ No retry | High |
-| Stale session → graceful fallback | N/A | ❌ 404 crash | High |
-| Session interrupted indicator | N/A | ❌ Not shown | High |
-| Retry failed message | ✅ Auto-retry API | ❌ Missing | Medium |
-| Error toast/banner | ✅ Inline error | ⚠️ `state.error` exists, but UI? | Medium |
-| Backend restart detection | N/A | ❌ Missing | High |
+| Network disconnect → reconnect | N/A (local) | ✅ Retries with exponential backoff in useStream | OK |
+| Stale session → graceful fallback | N/A | ✅ `sessionMissing` state + "Start new session" UI | OK |
+| Session interrupted indicator | N/A | ✅ `connectionState: 'interrupted'` + Resume banner | OK |
+| Retry failed message | ✅ Auto-retry API | ✅ Retries implemented in useStream | OK |
+| Error toast/banner | ✅ Inline error | ✅ `state.error` displayed in UI | OK |
+| Backend restart detection | N/A | ✅ `serverEpochRef` + `connectionState: 'restarted'` | OK |
 
 ---
 
@@ -182,12 +175,12 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 
 | Feature | CLI | Current Web | Gap | Priority |
 |---------|-----|-------------|-----|----------|
-| Plan mode | ✅ `/plan` | ⚠️ Plan approval UI exists | Verify |
-| Agent/subagent | ✅ `AgentTool` | ⚠️ `AgentPanel` exists | Verify |
+| Plan mode | ✅ `/plan` | ✅ Plan approval UI exists | OK |
+| Agent/subagent | ✅ `AgentTool` | ✅ `AgentPanel` exists | OK |
 | Task list | ✅ `TodoWrite` | ✅ `TaskList` component | OK |
-| MCP servers | ✅ `/mcp` | ⚠️ Has API, but UI? | Medium |
-| Memory files (`CLAUDE.md`) | ✅ `/memory` | ⚠️ Has API, but UI? | Medium |
-| Workspace search | ✅ Grep/Glob | ⚠️ Has API, but UI? | Low |
+| MCP servers | ✅ `/mcp` | ⚠️ Has API, `McpManagerDialog` exists | Medium |
+| Memory files (`CLAUDE.md`) | ✅ `/memory` | ⚠️ Has API, `MemoryDialog` exists | Medium |
+| Workspace search | ✅ Grep/Glob | ⚠️ Has API, `SearchDialog` exists | Low |
 | Diff view for edits | ✅ Inline diff | ✅ `DiffViewer` | OK |
 | Mermaid diagrams | N/A | ✅ `MermaidPanel` | Bonus |
 | Export conversation | ✅ `/export` | ⚠️ `ExportDialog` exists | Verify |
@@ -202,15 +195,15 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 2. ~~Frontend stale session graceful fallback~~ ✅ Done
 3. ~~Tool elapsed time tracking + display~~ ✅ Done
 4. ~~Live tool output while running (Bash stdout)~~ ✅ Done
-5. Permission replay on reconnect ✅ Done
-6. ~~Backend restart detection + “session interrupted” UI~~ ✅ Done
+5. ~~Permission replay on reconnect~~ ✅ Done
+6. ~~Backend restart detection + "session interrupted" UI~~ ✅ Done
 
 ### P1 — High (noticeable UX gap)
 7. ~~Spinner animation for running tools~~ ✅ Done
 8. ~~`●` prefix for streaming text~~ ✅ Done
 9. ~~Tool color mapping by type~~ ✅ Done
 10. ~~Network disconnect → auto-reconnect~~ ✅ Done
-11. AsyncLocalStorage (multi-session in-process) ✅ Done
+11. ~~AsyncLocalStorage (multi-session in-process)~~ ✅ Done
 12. ~~Thinking auto-hide after 30s~~ ✅ Done
 
 ### P2 — Medium (polish)
@@ -234,49 +227,45 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 
 ```
 Phase 1: SQLite Persistence
-  → DB layer (interface for SQLite/PostgreSQL)
-  → Persist sessions + events
-  → Hydrate EventBus from DB on restart
-  → Frontend graceful stale session
+  ✅ DB layer with SQLite
+  ✅ Persist sessions + events
+  ✅ Hydrate EventBus from DB on restart
+  ✅ Frontend graceful stale session
 
 Phase 2: AsyncLocalStorage (Multi-Session)
-  → SessionContext type + ALS store
-  → Update read/write accessors
-  → Wire into RCS route handlers
-  → Concurrent session test
+  ✅ SessionContext type + ALS store
+  ✅ Per-session isolation in RCS
 
 Phase 3: Embed CLI Logic → RCS Direct
   → Replace subprocess with QueryEngine call
   → Replace Ink UI → EventBus callbacks
-  → Replace stdout → EventBus publish
   → Remove subprocess-manager
 
 Phase 4: Production Ready
   → Enable all features (no env vars)
-  → Swap SQLite → PostgreSQL
-  → Reconnect UX + permission replay
-  → Clean CLI entrypoint → thin wrapper or remove
+  → DB abstraction layer (SQLite/PostgreSQL)
+  → Clean CLI entrypoint → thin wrapper
 ```
 
 ---
 
-## 8. Files to Modify
+## 8. Remaining Open Items
 
-### Backend (`packages/remote-control-server/src/`)
-- `db.ts` — NEW: DB initialization + schema
-- `store.ts` — REWRITE: SQLite-backed store
-- `transport/event-bus.ts` — MODIFY: persist events on publish, hydrate from DB
-- `services/subprocess-manager.ts` — MODIFY: track elapsed time per tool
-- `index.ts` — MODIFY: call `initDb()` on startup
+### High Priority (not yet implemented)
+- **Phase 3 architecture**: Embed CLI logic in-process (subprocess → direct QueryEngine)
+- **Tool-specific permission cards**: Diff preview for Edit tool, command preview for Bash
 
-### Frontend (`web/src/`)
-- `hooks/useStream.ts` — MODIFY: track tool start time, thinking timestamps
-- `components/claude/Conversation.tsx` — MODIFY: streaming indicator `●`, tool colors
-- `components/claude/ConversationToolItem.tsx` — MODIFY: animated spinner, elapsed time, live output
-- `components/claude/ThinkingCollapsible.tsx` — MODIFY: auto-hide after 30s
-- `components/claude/PermissionPanel.tsx` — MODIFY: always-allow option, edit input
-- `pages/Index.tsx` — MODIFY: stale session fallback, reconnect logic
+### Medium Priority
+- File attachment (`@`) verification in UI
+- Slash command full parity (security gates limit some commands)
+- Export conversation dialog verification
+
+### Phase 3 Items (refactor, not bug)
+- CLI logic in-process (direct QueryEngine call)
+- DB abstraction (interface for SQLite/PostgreSQL)
+- Permission callbacks (EventBus-based, not Ink UI)
+- Feature flags (all enabled, no bun:bundle env)
 
 ---
 
-*Last updated: 2026-04-30 (All P0/P1/P2/P3 items completed after 5+5 agent sessions)*
+*Last updated: 2026-04-30 (After sync + merge + duplicate event fix)*
