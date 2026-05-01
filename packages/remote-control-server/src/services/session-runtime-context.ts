@@ -241,7 +241,7 @@ export function resolveOwnedWebSessionRuntimeContext(
     session,
   );
 
-  if (options.requireWorkspace && !context.workspace) {
+  if (options.requireWorkspace && !context.workspace?.workspacePath) {
     return {
       ok: false,
       error: {

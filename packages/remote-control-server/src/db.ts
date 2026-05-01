@@ -162,6 +162,7 @@ export function initDb() {
 export async function runMigrations() {
   try {
     await import("./migrations/001_workspace_lifecycle");
+    await import("./migrations/002_session_workspace_binding");
   } catch (err) {
     log(`[DB] Migration error: ${err}`);
   }

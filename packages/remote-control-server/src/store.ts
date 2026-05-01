@@ -29,6 +29,7 @@ export interface EnvironmentRecord {
 export interface SessionRecord {
   id: string;
   environmentId: string | null;
+  workspaceId: string | null;
   title: string | null;
   status: string;
   source: string;
@@ -136,6 +137,7 @@ function rowToSession(row: Record<string, unknown>): SessionRecord {
   return {
     id: row.id as string,
     environmentId: (row.environment_id as string | null) ?? null,
+    workspaceId: (row.workspace_id as string | null) ?? null,
     title: (row.title as string | null) ?? null,
     status: row.status as string,
     source: row.source as string,
@@ -314,6 +316,15 @@ export function storeCreateSession(req: {
     req.source ?? "remote-control", req.permissionMode ?? null,
     req.username ?? null, now, now,
   );
+  const session = rowToSession(db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as Record<string, unknown>);
+  const workspaceId = `workspace_${randomUUID().replace(/-/g, "")}`;
+  db.prepare(`
+    INSERT INTO workspaces (id, session_id, environment_id, source_root, strategy, workspace_path, cleanup_policy, created_at, updated_at)
+    VALUES (?, ?, ?, '', 'same-dir', '', 'keep', ?, ?)
+  `).run(
+    workspaceId, id, req.environmentId ?? null, now, now,
+  );
+  db.prepare(`UPDATE sessions SET workspace_id = ? WHERE id = ?`).run(workspaceId, id);
   return rowToSession(db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as Record<string, unknown>);
 }
 
@@ -324,13 +335,14 @@ export function storeGetSession(id: string): SessionRecord | undefined {
 
 export function storeUpdateSession(
   id: string,
-  patch: Partial<Pick<SessionRecord, "title" | "status" | "workerEpoch" | "updatedAt">>,
+  patch: Partial<Pick<SessionRecord, "title" | "status" | "workerEpoch" | "workspaceId" | "updatedAt">>,
 ): boolean {
   const sets: string[] = [];
   const values: unknown[] = [];
   if (patch.title !== undefined) { sets.push("title = ?"); values.push(patch.title); }
   if (patch.status !== undefined) { sets.push("status = ?"); values.push(patch.status); }
   if (patch.workerEpoch !== undefined) { sets.push("worker_epoch = ?"); values.push(patch.workerEpoch); }
+  if (patch.workspaceId !== undefined) { sets.push("workspace_id = ?"); values.push(patch.workspaceId); }
   sets.push("updated_at = ?");
   values.push((patch.updatedAt ?? new Date()).toISOString());
   values.push(id);
@@ -360,6 +372,11 @@ export function storeDeleteSession(id: string): boolean {
 export function storeGetWorkspace(id: string): WorkspaceRecord | undefined {
   const row = db.prepare("SELECT * FROM workspaces WHERE id = ?").get(id) as Record<string, unknown> | undefined;
   return row ? rowToWorkspace(row) : undefined;
+}
+
+export function storeGetSessionByWorkspace(workspaceId: string): SessionRecord | undefined {
+  const row = db.prepare("SELECT * FROM sessions WHERE workspace_id = ?").get(workspaceId) as Record<string, unknown> | undefined;
+  return row ? rowToSession(row) : undefined;
 }
 
 export function storeGetWorkspaceBySession(sessionId: string): WorkspaceRecord | undefined {
