@@ -1,5 +1,14 @@
 // src/server/eventProtocol.ts
 // Event types for server <-> client communication
+//
+// Canonical Event Model: see docs/features/event-model.md (bd-3fg.3.1.2)
+// - CanonicalEvent envelope with id, sessionId, seqNum, type, direction, timestamp, payload, turnId, turnPhase
+// - afterSeq replay cursor semantics (query param, legacy alias, Last-Event-ID header)
+// - Deduplication via deliveredSeqNums Set
+// - Turn lifecycle state machine (pending_input → processing → awaiting_permission/output → complete/interrupted)
+// NOTE: This file defines CC CLI IPC event types. The RCS SSE implementation is in
+// packages/remote-control-server/src/transport/sse-writer.ts and packages/remote-control-server/src/types/messages.ts
+// which align with the canonical model.
 
 import type { ReplyQuote as ContractReplyQuote } from '../../packages/contracts/src/chat.js'
 
