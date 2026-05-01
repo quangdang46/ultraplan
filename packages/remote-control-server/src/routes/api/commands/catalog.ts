@@ -1,0 +1,138 @@
+import { Hono } from "hono";
+import { uuidAuth } from "../../../auth/middleware";
+
+export type CommandCatalogEntry = {
+  id: string;
+  name: string;
+  description: string;
+  origin: string;
+  scope: "global" | "workspace" | "project";
+  executionHint: "prompt" | "local" | "local-jsx" | "web-native";
+  subcommands?: CommandCatalogEntry[];
+};
+
+type CommandSource = "builtin" | "bundled" | "plugin" | "mcp" | "personal" | "project" | "workspace" | string;
+type CommandType = "prompt" | "local" | "local-jsx";
+type CommandLoadedFrom = "commands_DEPRECATED" | "skills" | "plugin" | "managed" | "bundled" | "mcp";
+
+interface MinimalCommand {
+  type: CommandType;
+  source: CommandSource;
+  loadedFrom?: CommandLoadedFrom;
+  name: string;
+  aliases?: string[];
+  description: string;
+  isHidden?: boolean;
+  userInvocable?: boolean;
+  isMcp?: boolean;
+  bridgeSafe?: boolean;
+}
+
+const STATIC_COMMAND_CATALOG: MinimalCommand[] = [
+  { type: "prompt", source: "builtin", name: "skill", description: "Manage and run skills" },
+  { type: "prompt", source: "bundled", name: "dream", description: "Organize session memories" },
+  { type: "prompt", source: "bundled", name: "verify", description: "Verify task completion" },
+  { type: "prompt", source: "bundled", name: "simplify", description: "Simplify code" },
+  { type: "prompt", source: "bundled", name: "batch", description: "Run tasks in batch" },
+  { type: "prompt", source: "bundled", name: "stuck", description: "Handle stuck processes" },
+  { type: "prompt", source: "bundled", name: "loop", description: "Loop control for agents" },
+  { type: "prompt", source: "bundled", name: "remember", description: "Remember information" },
+  { type: "prompt", source: "bundled", name: "debug", description: "Debug helper" },
+  { type: "prompt", source: "bundled", name: "cron-list", description: "List scheduled tasks" },
+  { type: "prompt", source: "bundled", name: "cron-delete", description: "Delete scheduled task" },
+  { type: "prompt", source: "bundled", name: "lorem-ipsum", description: "Generate placeholder text" },
+  { type: "prompt", source: "bundled", name: "keybindings", description: "Keybinding help" },
+  { type: "prompt", source: "bundled", name: "update-config", description: "Update configuration" },
+  { type: "prompt", source: "bundled", name: "skillify", description: "Create skill from session" },
+  { type: "local-jsx", source: "builtin", name: "skills", description: "List available skills", userInvocable: false },
+  { type: "local", source: "builtin", name: "compact", description: "Summarize conversation", bridgeSafe: true },
+  { type: "local", source: "builtin", name: "clear", description: "Clear conversation", bridgeSafe: true },
+  { type: "local", source: "builtin", name: "cost", description: "Show token usage", bridgeSafe: true },
+  { type: "local", source: "builtin", name: "summary", description: "Summarize conversation", bridgeSafe: true },
+  { type: "local", source: "builtin", name: "release-notes", description: "Show changelog", bridgeSafe: true },
+  { type: "local", source: "builtin", name: "files", description: "List tracked files", bridgeSafe: true },
+  { type: "prompt", source: "builtin", name: "session", description: "Session management" },
+  { type: "prompt", source: "builtin", name: "help", description: "Show help" },
+  { type: "prompt", source: "builtin", name: "plan", description: "Enter plan mode" },
+  { type: "prompt", source: "builtin", name: "btw", description: "Quick note" },
+  { type: "prompt", source: "builtin", name: "feedback", description: "Send feedback" },
+  { type: "prompt", source: "builtin", name: "theme", description: "Change terminal theme" },
+  { type: "prompt", source: "builtin", name: "color", description: "Change agent color" },
+  { type: "prompt", source: "builtin", name: "vim", description: "Toggle vim mode" },
+  { type: "prompt", source: "builtin", name: "usage", description: "Show usage info" },
+  { type: "prompt", source: "builtin", name: "config", description: "View or update configuration" },
+  { type: "prompt", source: "builtin", name: "mcp", description: "Manage MCP servers" },
+  { type: "prompt", source: "builtin", name: "doctor", description: "Run diagnostics" },
+  { type: "prompt", source: "builtin", name: "review", description: "Review code changes" },
+  { type: "prompt", source: "builtin", name: "init", description: "Initialize project" },
+  { type: "prompt", source: "builtin", name: "rewind", description: "Undo last turn" },
+  { type: "prompt", source: "builtin", name: "permissions", description: "Manage tool permissions" },
+  { type: "prompt", source: "builtin", name: "memory", description: "Manage memory files" },
+  { type: "prompt", source: "builtin", name: "model", description: "Switch model" },
+  { type: "prompt", source: "builtin", name: "attach", description: "Attach to a session" },
+  { type: "prompt", source: "builtin", name: "detach", description: "Detach from session" },
+  { type: "prompt", source: "builtin", name: "send", description: "Send message to session" },
+  { type: "prompt", source: "builtin", name: "pipes", description: "Manage pipes" },
+  { type: "prompt", source: "builtin", name: "tasks", description: "Task management" },
+  { type: "prompt", source: "builtin", name: "agents", description: "Agent management" },
+  { type: "prompt", source: "builtin", name: "plugin", description: "Plugin management" },
+  { type: "prompt", source: "builtin", name: "resume", description: "Resume session" },
+  { type: "prompt", source: "builtin", name: "status", description: "Show status" },
+  { type: "prompt", source: "builtin", name: "diff", description: "Show changes" },
+  { type: "prompt", source: "builtin", name: "branch", description: "Branch operations" },
+  { type: "prompt", source: "builtin", name: "commit", description: "Commit changes" },
+  { type: "prompt", source: "builtin", name: "login", description: "Login to service" },
+  { type: "prompt", source: "builtin", name: "logout", description: "Logout from service" },
+];
+
+function mapCommandTypeToExecutionHint(cmd: MinimalCommand): "prompt" | "local" | "local-jsx" | "web-native" {
+  if (cmd.type === "prompt") return "prompt";
+  if (cmd.type === "local-jsx") return "local-jsx";
+  if (cmd.type === "local") {
+    if (cmd.bridgeSafe === true) return "web-native";
+    return "local";
+  }
+  return "local";
+}
+
+function mapSourceToOrigin(source: CommandSource): string {
+  if (source === "builtin") return "builtin";
+  if (source === "bundled") return "bundled";
+  if (source === "plugin" || source === "mcp") return "plugin";
+  return source;
+}
+
+function inferScope(cmd: MinimalCommand): "global" | "workspace" | "project" {
+  if (cmd.isMcp) return "project";
+  if (cmd.loadedFrom === "skills") return "project";
+  if (cmd.loadedFrom === "managed") return "workspace";
+  return "global";
+}
+
+function commandToCatalogEntry(cmd: MinimalCommand): CommandCatalogEntry {
+  return {
+    id: cmd.name,
+    name: cmd.name,
+    description: cmd.description,
+    origin: mapSourceToOrigin(cmd.source),
+    scope: inferScope(cmd),
+    executionHint: mapCommandTypeToExecutionHint(cmd),
+  };
+}
+
+const app = new Hono();
+
+app.get("/", uuidAuth, async (c) => {
+  const includeAll = c.req.query("all") === "true";
+
+  const entries = STATIC_COMMAND_CATALOG
+    .filter((cmd) => !cmd.isHidden)
+    .filter((cmd) => cmd.userInvocable !== false || (cmd.aliases && cmd.aliases.length > 0))
+    .map(commandToCatalogEntry);
+
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+
+  return c.json({ commands: entries });
+});
+
+export default app;
