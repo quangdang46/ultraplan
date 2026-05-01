@@ -58,6 +58,7 @@ export interface CreateSessionRequest {
   events?: unknown[];
   source?: string;
   permission_mode?: string;
+  cwd?: string | null;
 }
 
 export interface SessionResponse {

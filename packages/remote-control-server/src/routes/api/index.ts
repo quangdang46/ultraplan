@@ -119,6 +119,7 @@ app.post("/sessions", uuidAuth, async (c) => {
     title: body.title || "New Session",
     source: "web",
     permission_mode: body.permission_mode || "default",
+    cwd: body.cwd || null,
   });
   storeBindSession(session.id, uuid);
   return c.json({ session: toWebSessionResponse(session) });

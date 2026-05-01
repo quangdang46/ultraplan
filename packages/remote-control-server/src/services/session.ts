@@ -53,7 +53,7 @@ function toWebSessionSummaryResponse(session: SessionSummaryResponse): SessionSu
   return { ...session, id: toWebSessionId(session.id) };
 }
 
-export function createSession(req: CreateSessionRequest & { username?: string }): SessionResponse {
+export function createSession(req: CreateSessionRequest & { username?: string; cwd?: string | null }): SessionResponse {
   const environmentId =
     req.environment_id && storeGetEnvironment(req.environment_id)
       ? req.environment_id
@@ -65,6 +65,7 @@ export function createSession(req: CreateSessionRequest & { username?: string })
     source: req.source,
     permissionMode: req.permission_mode,
     username: req.username,
+    cwd: req.cwd,
   });
   return toResponse(record);
 }

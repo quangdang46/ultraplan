@@ -305,6 +305,7 @@ export function storeCreateSession(req: {
   permissionMode?: string | null;
   idPrefix?: string;
   username?: string | null;
+  cwd?: string | null;
 }): SessionRecord {
   const id = `${req.idPrefix || "session_"}${randomUUID().replace(/-/g, "")}`;
   const now = new Date().toISOString();
@@ -318,11 +319,13 @@ export function storeCreateSession(req: {
   );
   const session = rowToSession(db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as Record<string, unknown>);
   const workspaceId = `workspace_${randomUUID().replace(/-/g, "")}`;
+  const strategy = req.cwd ? "materialized" : "same-dir";
+  const workspacePath = req.cwd ?? "";
   db.prepare(`
     INSERT INTO workspaces (id, session_id, environment_id, source_root, strategy, workspace_path, cleanup_policy, created_at, updated_at)
-    VALUES (?, ?, ?, '', 'same-dir', '', 'keep', ?, ?)
+    VALUES (?, ?, ?, '', ?, ?, 'keep', ?, ?)
   `).run(
-    workspaceId, id, req.environmentId ?? null, now, now,
+    workspaceId, id, req.environmentId ?? null, strategy, workspacePath, now, now,
   );
   db.prepare(`UPDATE sessions SET workspace_id = ? WHERE id = ?`).run(workspaceId, id);
   return rowToSession(db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as Record<string, unknown>);
