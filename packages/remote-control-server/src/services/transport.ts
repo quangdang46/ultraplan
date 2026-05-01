@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 import { getEventBus } from "../transport/event-bus";
 import { db } from "../db";
 import { storeAddPendingPermission, storeRemovePendingPermission } from "../store";
+import {
+  buildCanonicalSessionEvent,
+  type CanonicalSessionEvent,
+  type NormalizedEventPayload,
+  type SessionEventDirection,
+  type SessionEventType,
+} from "../types/messages";
 
 function getNextSeqNum(sessionId: string): number {
   const row = db
@@ -32,6 +39,22 @@ function toSeqNum(value: unknown): number | null {
     return null;
   }
   return Math.trunc(value);
+}
+
+function shouldHoistField(type: string, key: string, value: unknown): boolean {
+  if (value === undefined || key === "content" || key === "raw") {
+    return false;
+  }
+
+  if (key === "uuid" && typeof value === "string" && value.length === 0) {
+    return false;
+  }
+
+  if ((key === "task_list_id" || key === "taskListId" || key === "tasks") && type !== "task_state") {
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -71,11 +94,10 @@ function extractContent(payload: unknown): string {
  * Normalize event payload into a flat structure that matches the ServerEvent
  * contract types while preserving the original in `raw` for backward compat.
  *
- * Key principle: all fields from the original payload are hoisted to the top
- * level so consumers can read `event.data.delta.text` directly instead of
- * having to dive into `event.data.raw.delta.text`.
+ * Key principle: backend-owned fields stay flattened at the top level while
+ * adapter-only noise is left inside `raw` for compatibility reads.
  */
-export function normalizePayload(type: string, payload: unknown): Record<string, unknown> {
+export function normalizePayload(type: string, payload: unknown): NormalizedEventPayload {
   if (!payload || typeof payload !== "object") {
     return { content: typeof payload === "string" ? payload : "", raw: payload };
   }
@@ -83,17 +105,20 @@ export function normalizePayload(type: string, payload: unknown): Record<string,
   const p = payload as Record<string, unknown>;
   const content = extractContent(payload);
 
-  // Start with a shallow copy of the original payload so all fields are
-  // available at the top level (delta, block, id, name, input, etc.)
-  const normalized: Record<string, unknown> = {
-    ...p,
+  const normalized: NormalizedEventPayload = {
     content,
     raw: payload,
   };
 
+  for (const [key, value] of Object.entries(p)) {
+    if (shouldHoistField(type, key, value)) {
+      normalized[key] = value;
+    }
+  }
+
   // Preserve tool aliases
-  if (p.name && !p.tool_name) normalized.tool_name = p.name;
-  if (p.input && !p.tool_input) normalized.tool_input = p.input;
+  if (p.name && !normalized.tool_name) normalized.tool_name = p.name;
+  if (p.input && !normalized.tool_input) normalized.tool_input = p.input;
 
   return normalized;
 }
@@ -101,16 +126,21 @@ export function normalizePayload(type: string, payload: unknown): Record<string,
 /** Publish an event to a session's bus and persist to SQLite */
 export function publishSessionEvent(
   sessionId: string,
-  type: string,
+  type: SessionEventType,
   payload: unknown,
-  direction: "inbound" | "outbound",
-) {
+  direction: SessionEventDirection,
+): CanonicalSessionEvent {
   const normalized = normalizePayload(type, payload);
   const requestedSeqNum =
     normalized && typeof normalized === "object"
       ? toSeqNum((normalized as Record<string, unknown>).seqNum)
       : null;
-  const nextSeqNum = requestedSeqNum ?? getNextSeqNum(sessionId);
+  const requestedSeqAlias =
+    requestedSeqNum ??
+    (normalized && typeof normalized === "object"
+      ? toSeqNum((normalized as Record<string, unknown>).seq)
+      : null);
+  const nextSeqNum = requestedSeqAlias ?? getNextSeqNum(sessionId);
   const bus = getEventBus(sessionId, nextSeqNum - 1);
   const eventId = randomUUID();
 
@@ -120,6 +150,7 @@ export function publishSessionEvent(
     type,
     payload: normalized,
     direction,
+    seqNum: nextSeqNum,
   });
 
   try {
@@ -171,7 +202,7 @@ export function publishSessionEvent(
 export function loadPersistedEvents(
   sessionId: string,
   sinceSeqNum = 0,
-): Array<{ id: string; sessionId: string; type: string; payload: unknown; direction: string; seqNum: number; createdAt: number }> {
+): CanonicalSessionEvent[] {
   const rows = db
     .prepare(
       `SELECT id, session_id, type, payload, direction, seq_num, created_at
@@ -181,15 +212,17 @@ export function loadPersistedEvents(
     )
     .all(sessionId, sinceSeqNum) as Array<Record<string, unknown>>;
 
-  return rows.map((row) => ({
-    id: row.id as string,
-    sessionId: row.session_id as string,
-    type: row.type as string,
-    payload: JSON.parse(row.payload as string),
-    direction: row.direction as string,
-    seqNum: row.seq_num as number,
-    createdAt: new Date(row.created_at as string).getTime(),
-  }));
+  return rows.map((row) =>
+    buildCanonicalSessionEvent({
+      id: row.id as string,
+      sessionId: row.session_id as string,
+      type: row.type as SessionEventType,
+      payload: JSON.parse(row.payload as string),
+      direction: row.direction as SessionEventDirection,
+      seqNum: row.seq_num as number,
+      createdAt: new Date(row.created_at as string).getTime(),
+    }),
+  );
 }
 
 export function hydrateEventBusFromPersistence(sessionId: string, sinceSeqNum = 0): void {
@@ -203,7 +236,7 @@ export function hydrateEventBusFromPersistence(sessionId: string, sinceSeqNum = 
       sessionId: event.sessionId,
       type: event.type,
       payload: event.payload,
-      direction: event.direction as "inbound" | "outbound",
+      direction: event.direction,
       seqNum: event.seqNum,
       createdAt: event.createdAt,
     });

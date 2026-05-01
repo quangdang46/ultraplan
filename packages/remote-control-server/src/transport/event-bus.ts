@@ -1,22 +1,20 @@
 import { log, error as logError } from "../logger";
+import {
+  buildCanonicalSessionEvent,
+  type CanonicalSessionEvent,
+  type SessionEvent,
+  type SessionEventInput,
+} from "../types/messages";
 
-export interface SessionEvent {
-  id: string;
-  sessionId: string;
-  type: string;
-  payload: unknown;
-  direction: "inbound" | "outbound";
-  seqNum: number;
-  createdAt: number;
-}
+export type { CanonicalSessionEvent, SessionEvent, SessionEventInput } from "../types/messages";
 
-type Subscriber = (event: SessionEvent) => void;
+type Subscriber = (event: CanonicalSessionEvent) => void;
 
 const MAX_EVENTS_PER_BUS = 5000;
 
 export class EventBus {
   private subscribers = new Set<Subscriber>();
-  private events: SessionEvent[] = [];
+  private events: CanonicalSessionEvent[] = [];
   private seqNum: number;
   private closed = false;
 
@@ -33,13 +31,15 @@ export class EventBus {
     return this.subscribers.size;
   }
 
-  publish(event: Omit<SessionEvent, "seqNum" | "createdAt"> & Partial<Pick<SessionEvent, "seqNum" | "createdAt">>): SessionEvent {
+  publish(event: SessionEventInput): CanonicalSessionEvent {
     if (this.closed) throw new Error("EventBus is closed");
-    const full: SessionEvent = {
+    const seqNum = event.seqNum ?? this.seqNum + 1;
+    const createdAt = event.createdAt ?? Date.now();
+    const full = buildCanonicalSessionEvent({
       ...event,
-      seqNum: event.seqNum ?? ++this.seqNum,
-      createdAt: event.createdAt ?? Date.now(),
-    };
+      seqNum,
+      createdAt,
+    });
     this.seqNum = Math.max(this.seqNum, full.seqNum);
     this.events.push(full);
     // Evict oldest events when exceeding limit
@@ -64,7 +64,7 @@ export class EventBus {
     return this.seqNum;
   }
 
-  getEventsSince(seqNum: number): SessionEvent[] {
+  getEventsSince(seqNum: number): CanonicalSessionEvent[] {
     const idx = this.events.findIndex((e) => e.seqNum > seqNum);
     if (idx === -1) return [];
     return this.events.slice(idx);

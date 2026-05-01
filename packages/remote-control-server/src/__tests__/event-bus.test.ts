@@ -9,16 +9,22 @@ describe("EventBus", () => {
   });
 
   describe("publish", () => {
-    test("publishes event with seqNum starting at 1", () => {
+    test("publishes a canonical event envelope with seqNum starting at 1", () => {
       const event = bus.publish({
         id: "e1",
         sessionId: "s1",
         type: "user",
-        payload: { content: "hello" },
+        payload: { content: "hello", uuid: "msg-1" },
         direction: "outbound",
       });
+      expect(event.seq).toBe(1);
       expect(event.seqNum).toBe(1);
       expect(event.createdAt).toBeGreaterThan(0);
+      expect(event.timestamp).toBe(new Date(event.createdAt).toISOString());
+      expect(event.messageId).toBe("msg-1");
+      expect(event.turnId).toBe("msg-1");
+      expect(event.canonicalType).toBe("user.message");
+      expect(event.kind).toBe("user");
     });
 
     test("increments seqNum on each publish", () => {
@@ -26,6 +32,21 @@ describe("EventBus", () => {
       bus.publish({ id: "e2", sessionId: "s1", type: "assistant", payload: {}, direction: "inbound" });
       const event = bus.publish({ id: "e3", sessionId: "s1", type: "result", payload: {}, direction: "inbound" });
       expect(event.seqNum).toBe(3);
+    });
+
+    test("derives tool lifecycle metadata when message ids are not available", () => {
+      const event = bus.publish({
+        id: "e-tool",
+        sessionId: "s1",
+        type: "tool_start",
+        payload: { id: "tool-1", name: "bash", input: { command: "pwd" } },
+        direction: "outbound",
+      });
+
+      expect(event.messageId).toBeNull();
+      expect(event.turnId).toBe("tool-1");
+      expect(event.canonicalType).toBe("tool.start");
+      expect(event.kind).toBe("tool");
     });
 
     test("throws when publishing to a closed bus", () => {

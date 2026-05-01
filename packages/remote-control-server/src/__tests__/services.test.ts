@@ -423,5 +423,58 @@ describe("Transport Service", () => {
       const payload = event.payload as Record<string, unknown>;
       expect(payload.content).toBe("reply");
     });
+
+    test("derives canonical permission metadata from control responses", () => {
+      const event = publishSessionEvent(
+        "s1",
+        "control_response",
+        { request_id: "req-1", approved: true },
+        "inbound",
+      );
+
+      expect(event.canonicalType).toBe("permission.resolved");
+      expect(event.kind).toBe("permission");
+      expect(event.turnId).toBe("req-1");
+      expect(event.messageId).toBeNull();
+    });
+
+    test("derives canonical task metadata from task snapshots", () => {
+      const event = publishSessionEvent(
+        "s1",
+        "task_state",
+        { task_list_id: "task-list-1", tasks: [{ id: "t1", subject: "Ship it" }] },
+        "outbound",
+      );
+
+      expect(event.canonicalType).toBe("task.state");
+      expect(event.kind).toBe("task");
+      expect(event.turnId).toBe("task-list-1");
+    });
+
+    test("uses deterministic session turn ids for status events without message ids", () => {
+      const event = publishSessionEvent(
+        "s1",
+        "status",
+        { status: "conversation_cleared" },
+        "outbound",
+      );
+
+      expect(event.canonicalType).toBe("session.state");
+      expect(event.kind).toBe("session");
+      expect(event.turnId).toBe("s1:session.state");
+      expect(event.messageId).toBeNull();
+    });
+
+    test("honors adapter-provided seq aliases", () => {
+      const event = publishSessionEvent(
+        "s1",
+        "assistant",
+        { content: "reply", seq: 7 },
+        "inbound",
+      );
+
+      expect(event.seq).toBe(7);
+      expect(event.seqNum).toBe(7);
+    });
   });
 });
