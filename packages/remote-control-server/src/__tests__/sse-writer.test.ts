@@ -23,7 +23,7 @@ mock.module("../config", () => ({
 import { Hono } from "hono";
 import { storeReset } from "../store";
 import { removeEventBus, getAllEventBuses, getEventBus } from "../transport/event-bus";
-import { createSSEWriter, createSSEStream } from "../transport/sse-writer";
+import { createSSEWriter, createSSEStream, resolveReplayCursor } from "../transport/sse-writer";
 
 /** Read up to N bytes from a Response stream, then cancel */
 async function readPartialStream(res: Response, maxBytes = 4096): Promise<string> {
@@ -67,6 +67,45 @@ describe("SSE Writer", () => {
       expect(capturedWriter).not.toBeNull();
       expect(typeof capturedWriter!.send).toBe("function");
       expect(typeof capturedWriter!.close).toBe("function");
+    });
+  });
+
+  describe("resolveReplayCursor", () => {
+    test("returns 0 when no params or headers", () => {
+      const result = resolveReplayCursor(new URLSearchParams(), new Headers());
+      expect(result).toBe(0);
+    });
+
+    test("prefers afterSeq over from_sequence_num", () => {
+      const params = new URLSearchParams([["afterSeq", "10"], ["from_sequence_num", "5"]]);
+      const result = resolveReplayCursor(params, new Headers());
+      expect(result).toBe(10);
+    });
+
+    test("prefers from_sequence_num over Last-Event-ID", () => {
+      const params = new URLSearchParams([["from_sequence_num", "7"]]);
+      const headers = new Headers([["Last-Event-ID", "3"]]);
+      const result = resolveReplayCursor(params, headers);
+      expect(result).toBe(7);
+    });
+
+    test("uses Last-Event-ID when no query params", () => {
+      const params = new URLSearchParams();
+      const headers = new Headers([["Last-Event-ID", "42"]]);
+      const result = resolveReplayCursor(params, headers);
+      expect(result).toBe(42);
+    });
+
+    test("returns 0 for afterSeq=0 (live-only)", () => {
+      const params = new URLSearchParams([["afterSeq", "0"]]);
+      const result = resolveReplayCursor(params, new Headers());
+      expect(result).toBe(0);
+    });
+
+    test("returns 0 for negative values", () => {
+      const params = new URLSearchParams([["afterSeq", "-5"]]);
+      const result = resolveReplayCursor(params, new Headers());
+      expect(result).toBe(0);
     });
   });
 

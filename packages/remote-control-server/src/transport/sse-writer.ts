@@ -9,6 +9,41 @@ export interface SSEWriter {
   close(): void;
 }
 
+/**
+ * Resolve the SSE replay cursor from query params and headers.
+ *
+ * Precedence (first non-zero wins):
+ * 1. ?afterSeq=N   — primary query param
+ * 2. ?from_sequence_num=N  — legacy alias
+ * 3. Last-Event-ID: N  — SSE standard header
+ *
+ * Returns 0 when no cursor is provided (live-only stream).
+ */
+export function resolveReplayCursor(
+  query: URLSearchParams,
+  headers: Headers,
+): number {
+  const afterSeq = query.get("afterSeq");
+  if (afterSeq !== null) {
+    const n = parseInt(afterSeq, 10);
+    if (!isNaN(n) && n > 0) return n;
+  }
+
+  const fromSeq = query.get("from_sequence_num");
+  if (fromSeq !== null) {
+    const n = parseInt(fromSeq, 10);
+    if (!isNaN(n) && n > 0) return n;
+  }
+
+  const lastEventId = headers.get("Last-Event-ID");
+  if (lastEventId !== null) {
+    const n = parseInt(lastEventId, 10);
+    if (!isNaN(n) && n > 0) return n;
+  }
+
+  return 0;
+}
+
 export function createSSEWriter(c: Context): SSEWriter {
   const stream = new ReadableStream({
     start(controller) {
@@ -51,39 +86,53 @@ export function createSSEStream(c: Context, sessionId: string, fromSeqNum = 0) {
   const stream = new ReadableStream({
     start(controller) {
       const encoder = new TextEncoder();
+      const deliveredSeqNums = new Set<number>();
+      const bufferedEvents: SessionEvent[] = [];
+      let replayDrained = false;
 
-      // Send historical events if reconnecting
-      if (fromSeqNum > 0) {
-        const missed = bus.getEventsSince(fromSeqNum);
-        for (const event of missed) {
-          const data = JSON.stringify({
-            type: event.type,
-            payload: event.payload,
-            direction: event.direction,
-            seqNum: event.seqNum,
-          });
-          controller.enqueue(encoder.encode(`id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`));
-        }
-      }
-
-      // Send initial keepalive
-      controller.enqueue(encoder.encode(": keepalive\n\n"));
-
-      // Subscribe to new events
-      const unsub = bus.subscribe((event) => {
+      const sendEvent = (event: SessionEvent) => {
+        if (deliveredSeqNums.has(event.seqNum)) return;
+        deliveredSeqNums.add(event.seqNum);
         const data = JSON.stringify({
           type: event.type,
           payload: event.payload,
           direction: event.direction,
           seqNum: event.seqNum,
         });
-        try {
-          log(`[RC-DEBUG] SSE -> web: sessionId=${sessionId} type=${event.type} dir=${event.direction} seq=${event.seqNum}`);
-          controller.enqueue(encoder.encode(`id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`));
-        } catch {
-          unsub();
+        controller.enqueue(encoder.encode(`id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`));
+      };
+
+      const flushBuffer = () => {
+        for (const event of bufferedEvents) {
+          sendEvent(event);
+        }
+        bufferedEvents.length = 0;
+      };
+
+      const unsub = bus.subscribe((event) => {
+        if (!replayDrained) {
+          if (fromSeqNum > 0 && event.seqNum > fromSeqNum) {
+            sendEvent(event);
+          } else if (fromSeqNum === 0 || event.seqNum <= fromSeqNum) {
+            bufferedEvents.push(event);
+          }
+        } else {
+          sendEvent(event);
         }
       });
+
+      if (fromSeqNum > 0) {
+        const missed = bus.getEventsSince(fromSeqNum);
+        for (const event of missed) {
+          sendEvent(event);
+        }
+      }
+
+      replayDrained = true;
+      flushBuffer();
+
+      // Send initial keepalive
+      controller.enqueue(encoder.encode(": keepalive\n\n"));
 
       // Keepalive interval
       const keepalive = setInterval(() => {
@@ -179,13 +228,20 @@ export function createWorkerEventStream(c: Context, sessionId: string, fromSeqNu
   const stream = new ReadableStream({
     start(controller) {
       const encoder = new TextEncoder();
+      const deliveredSeqNums = new Set<number>();
+
+      const sendFrame = (event: SessionEvent) => {
+        if (deliveredSeqNums.has(event.seqNum)) return;
+        deliveredSeqNums.add(event.seqNum);
+        controller.enqueue(encoder.encode(toWorkerClientFrame(event)));
+      };
 
       if (fromSeqNum > 0) {
         const missed = bus
           .getEventsSince(fromSeqNum)
           .filter((event) => event.direction === "outbound");
         for (const event of missed) {
-          controller.enqueue(encoder.encode(toWorkerClientFrame(event)));
+          sendFrame(event);
         }
       }
 
@@ -196,7 +252,7 @@ export function createWorkerEventStream(c: Context, sessionId: string, fromSeqNu
           return;
         }
         try {
-          controller.enqueue(encoder.encode(toWorkerClientFrame(event)));
+          sendFrame(event);
         } catch {
           unsub();
         }
