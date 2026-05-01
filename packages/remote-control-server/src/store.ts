@@ -43,6 +43,10 @@ export type WorkspaceStrategy = "worktree" | "copy" | "temp-clone" | "same-dir";
 
 export type WorkspaceCleanupPolicy = "keep" | "delete-on-close" | "delete-if-clean";
 
+export type LifecyclePolicy = "keep" | "delete_on_close" | "delete_if_clean";
+
+export type MaterializationStrategy = "git_worktree" | "copy" | "temp_clone";
+
 export interface WorkspaceRecord {
   id: string;
   sessionId: string;
@@ -54,6 +58,9 @@ export interface WorkspaceRecord {
   strategy: WorkspaceStrategy;
   workspacePath: string;
   cleanupPolicy: WorkspaceCleanupPolicy;
+  lifecyclePolicy: LifecyclePolicy | null;
+  materializationStrategy: MaterializationStrategy | null;
+  parentWorkspaceId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -152,6 +159,9 @@ function rowToWorkspace(row: Record<string, unknown>): WorkspaceRecord {
     strategy: row.strategy as WorkspaceStrategy,
     workspacePath: row.workspace_path as string,
     cleanupPolicy: row.cleanup_policy as WorkspaceCleanupPolicy,
+    lifecyclePolicy: (row.lifecycle_policy as LifecyclePolicy | null) ?? null,
+    materializationStrategy: (row.materialization_strategy as MaterializationStrategy | null) ?? null,
+    parentWorkspaceId: (row.parent_workspace_id as string | null) ?? null,
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
   };
@@ -368,6 +378,9 @@ export function storeUpsertWorkspace(
     strategy?: WorkspaceStrategy;
     workspacePath?: string;
     cleanupPolicy?: WorkspaceCleanupPolicy;
+    lifecyclePolicy?: LifecyclePolicy | null;
+    materializationStrategy?: MaterializationStrategy | null;
+    parentWorkspaceId?: string | null;
   },
 ): WorkspaceRecord {
   const now = new Date().toISOString();
@@ -384,9 +397,10 @@ export function storeUpsertWorkspace(
     db.prepare(`
       INSERT INTO workspaces (
         id, session_id, environment_id, source_root, repo_root, base_ref, branch,
-        strategy, workspace_path, cleanup_policy, created_at, updated_at
+        strategy, workspace_path, cleanup_policy, lifecycle_policy, materialization_strategy,
+        parent_workspace_id, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       sessionId,
@@ -398,6 +412,9 @@ export function storeUpsertWorkspace(
       patch.strategy,
       patch.workspacePath,
       patch.cleanupPolicy ?? "keep",
+      patch.lifecyclePolicy ?? null,
+      patch.materializationStrategy ?? null,
+      patch.parentWorkspaceId ?? null,
       now,
       now,
     );
@@ -436,6 +453,18 @@ export function storeUpsertWorkspace(
     if (patch.cleanupPolicy !== undefined) {
       sets.push("cleanup_policy = ?");
       values.push(patch.cleanupPolicy);
+    }
+    if (patch.lifecyclePolicy !== undefined) {
+      sets.push("lifecycle_policy = ?");
+      values.push(patch.lifecyclePolicy);
+    }
+    if (patch.materializationStrategy !== undefined) {
+      sets.push("materialization_strategy = ?");
+      values.push(patch.materializationStrategy);
+    }
+    if (patch.parentWorkspaceId !== undefined) {
+      sets.push("parent_workspace_id = ?");
+      values.push(patch.parentWorkspaceId);
     }
 
     if (sets.length > 0) {

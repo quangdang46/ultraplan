@@ -159,4 +159,13 @@ export function initDb() {
   return db;
 }
 
+export async function runMigrations() {
+  try {
+    await import("./migrations/001_workspace_lifecycle");
+  } catch (err) {
+    log(`[DB] Migration error: ${err}`);
+  }
+}
+
 initDb();
+void runMigrations();
