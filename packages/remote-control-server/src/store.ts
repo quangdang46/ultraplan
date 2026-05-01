@@ -595,6 +595,7 @@ export function storeGetSessionWorker(sessionId: string): SessionWorkerRecord | 
 }
 
 export function storeClearSessionRequiresAction(sessionId: string): void {
+  if (!storeGetSession(sessionId)) return;
   storeUpsertSessionWorker(sessionId, { requiresActionDetails: null });
 }
 
@@ -609,21 +610,11 @@ export function storeUpsertSessionWorker(
 ): SessionWorkerRecord {
   const now = new Date().toISOString();
   const existing = storeGetSessionWorker(sessionId);
-  const session = storeGetSession(sessionId);
-
-  if (!session && !existing) {
-    return {
-      sessionId,
-      workerStatus: patch.workerStatus ?? null,
-      externalMetadata: patch.externalMetadata ?? null,
-      requiresActionDetails: patch.requiresActionDetails ?? null,
-      lastHeartbeatAt: patch.lastHeartbeatAt ?? null,
-      createdAt: new Date(now),
-      updatedAt: new Date(now),
-    };
-  }
 
   if (!existing) {
+    if (!storeGetSession(sessionId)) {
+      throw new Error(`[store] storeUpsertSessionWorker: session ${sessionId} does not exist`);
+    }
     db.prepare(`
       INSERT INTO session_workers (session_id, worker_status, external_metadata, requires_action_details, last_heartbeat_at, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)

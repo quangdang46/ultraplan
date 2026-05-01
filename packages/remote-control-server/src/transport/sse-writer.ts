@@ -110,14 +110,10 @@ export function createSSEStream(c: Context, sessionId: string, fromSeqNum = 0) {
       };
 
       const unsub = bus.subscribe((event) => {
-        if (!replayDrained) {
-          if (fromSeqNum > 0 && event.seqNum > fromSeqNum) {
-            sendEvent(event);
-          } else if (fromSeqNum === 0 || event.seqNum <= fromSeqNum) {
-            bufferedEvents.push(event);
-          }
-        } else {
+        if (replayDrained) {
           sendEvent(event);
+        } else {
+          bufferedEvents.push(event);
         }
       });
 

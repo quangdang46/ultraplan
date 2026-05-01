@@ -2,6 +2,10 @@ import { log } from "../logger";
 import { db } from "../db";
 import { storeGetWorkspace } from "../store";
 
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0;
+}
+
 export interface WorkspaceRepoMembership {
   workspaceId: string;
   repoRoot: string;
@@ -15,6 +19,10 @@ function assertWorkspaceExists(workspaceId: string): void {
 }
 
 export function addRepoToWorkspace(workspaceId: string, repoRoot: string): boolean {
+  if (!isNonEmptyString(workspaceId) || !isNonEmptyString(repoRoot)) {
+    log(`[workspace-repo-membership] addRepoToWorkspace: invalid input workspaceId=${workspaceId} repoRoot=${repoRoot}`);
+    return false;
+  }
   log(`[workspace-repo-membership] addRepoToWorkspace workspaceId=${workspaceId} repoRoot=${repoRoot}`);
   assertWorkspaceExists(workspaceId);
 
@@ -29,6 +37,10 @@ export function addRepoToWorkspace(workspaceId: string, repoRoot: string): boole
 }
 
 export function removeRepoFromWorkspace(workspaceId: string, repoRoot: string): boolean {
+  if (!isNonEmptyString(workspaceId) || !isNonEmptyString(repoRoot)) {
+    log(`[workspace-repo-membership] removeRepoFromWorkspace: invalid input workspaceId=${workspaceId} repoRoot=${repoRoot}`);
+    return false;
+  }
   log(`[workspace-repo-membership] removeRepoFromWorkspace workspaceId=${workspaceId} repoRoot=${repoRoot}`);
 
   const result = db.prepare(`
@@ -41,6 +53,10 @@ export function removeRepoFromWorkspace(workspaceId: string, repoRoot: string): 
 }
 
 export function listReposForWorkspace(workspaceId: string): WorkspaceRepoMembership[] {
+  if (!isNonEmptyString(workspaceId)) {
+    log(`[workspace-repo-membership] listReposForWorkspace: invalid workspaceId`);
+    return [];
+  }
   log(`[workspace-repo-membership] listReposForWorkspace workspaceId=${workspaceId}`);
 
   const rows = db.prepare(`
@@ -61,6 +77,10 @@ export function listReposForWorkspace(workspaceId: string): WorkspaceRepoMembers
 }
 
 export function getWorkspaceByRepo(repoRoot: string): string | null {
+  if (!isNonEmptyString(repoRoot)) {
+    log(`[workspace-repo-membership] getWorkspaceByRepo: invalid repoRoot`);
+    return null;
+  }
   log(`[workspace-repo-membership] getWorkspaceByRepo repoRoot=${repoRoot}`);
 
   const row = db.prepare(`
@@ -73,6 +93,10 @@ export function getWorkspaceByRepo(repoRoot: string): string | null {
 }
 
 export function repoBelongsToWorkspace(workspaceId: string, repoRoot: string): boolean {
+  if (!isNonEmptyString(workspaceId) || !isNonEmptyString(repoRoot)) {
+    log(`[workspace-repo-membership] repoBelongsToWorkspace: invalid input workspaceId=${workspaceId} repoRoot=${repoRoot}`);
+    return false;
+  }
   log(`[workspace-repo-membership] repoBelongsToWorkspace workspaceId=${workspaceId} repoRoot=${repoRoot}`);
 
   const row = db.prepare(`

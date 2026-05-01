@@ -425,14 +425,12 @@ describe("store", () => {
       expect(storeGetSessionWorker(session.id)).toEqual(worker);
     });
 
-    test("skips inserts when the session no longer exists", () => {
-      const worker = storeUpsertSessionWorker("missing-session", {
-        workerStatus: "interrupted",
-      });
-
-      expect(worker.sessionId).toBe("missing-session");
-      expect(worker.workerStatus).toBe("interrupted");
-      expect(storeGetSessionWorker("missing-session")).toBeUndefined();
+    test("throws when the session does not exist", () => {
+      expect(() =>
+        storeUpsertSessionWorker("missing-session", {
+          workerStatus: "interrupted",
+        }),
+      ).toThrow();
     });
   });
 

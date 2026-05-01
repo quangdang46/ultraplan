@@ -11,9 +11,6 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
 }
 
-const PERMISSION_MODES = new Set(["clipboard", "read", "plan", "auto-edit", "edit", "bypass"]);
-const THINKING_EFFORTS = new Set(["off", "low", "medium", "high", "very-high"]);
-
 export interface SessionStatePatch {
   model?: string | null;
   permissionMode?: string | null;
