@@ -1,5 +1,6 @@
 import {
   storeCreateSession,
+  storeGetEnvironment,
   storeGetSession,
   storeIsSessionOwner,
   storeGetSessionOwners,
@@ -53,8 +54,13 @@ function toWebSessionSummaryResponse(session: SessionSummaryResponse): SessionSu
 }
 
 export function createSession(req: CreateSessionRequest & { username?: string }): SessionResponse {
+  const environmentId =
+    req.environment_id && storeGetEnvironment(req.environment_id)
+      ? req.environment_id
+      : null;
+
   const record = storeCreateSession({
-    environmentId: req.environment_id,
+    environmentId,
     title: req.title,
     source: req.source,
     permissionMode: req.permission_mode,

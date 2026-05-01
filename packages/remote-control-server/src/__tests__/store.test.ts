@@ -1,4 +1,5 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeAll, beforeEach } from "bun:test";
+import { initDb } from "../db";
 import {
   storeReset,
   storeCreateUser,
@@ -18,6 +19,11 @@ import {
   storeListSessionsByUsername,
   storeListSessionsByEnvironment,
   storeDeleteSession,
+  storeGetWorkspace,
+  storeGetWorkspaceBySession,
+  storeUpsertWorkspace,
+  storeGetSessionState,
+  storeUpsertSessionState,
   storeBindSession,
   storeIsSessionOwner,
   storeListSessionsByOwnerUuid,
@@ -28,6 +34,10 @@ import {
 } from "../store";
 
 describe("store", () => {
+  beforeAll(() => {
+    initDb();
+  });
+
   beforeEach(() => {
     storeReset();
   });
@@ -44,7 +54,7 @@ describe("store", () => {
     test("returns existing user on duplicate create", () => {
       const first = storeCreateUser("bob");
       const second = storeCreateUser("bob");
-      expect(first).toBe(second);
+      expect(first).toEqual(second);
     });
   });
 
@@ -133,7 +143,7 @@ describe("store", () => {
 
     test("returns created environment", () => {
       const env = storeCreateEnvironment({ secret: "s" });
-      expect(storeGetEnvironment(env.id)).toBe(env);
+      expect(storeGetEnvironment(env.id)).toEqual(env);
     });
   });
 
@@ -232,6 +242,18 @@ describe("store", () => {
       storeUpdateSession(session.id, { workerEpoch: 1 });
       expect(storeGetSession(session.id)?.workerEpoch).toBe(1);
     });
+
+    test("supports explicit updatedAt overrides and touch-only updates", () => {
+      const session = storeCreateSession({});
+      const forcedUpdatedAt = new Date("2024-01-02T03:04:05.000Z");
+
+      expect(storeUpdateSession(session.id, { updatedAt: forcedUpdatedAt })).toBe(
+        true,
+      );
+      expect(storeGetSession(session.id)?.updatedAt.toISOString()).toBe(
+        forcedUpdatedAt.toISOString(),
+      );
+    });
   });
 
   describe("storeListSessions", () => {
@@ -268,6 +290,122 @@ describe("store", () => {
 
     test("returns false for non-existent session", () => {
       expect(storeDeleteSession("nope")).toBe(false);
+    });
+  });
+
+  // ---------- Workspace ----------
+
+  describe("storeUpsertWorkspace / storeGetWorkspace", () => {
+    test("creates and resolves a workspace for a session", () => {
+      const session = storeCreateSession({});
+      const workspace = storeUpsertWorkspace(session.id, {
+        sourceRoot: "/repo",
+        repoRoot: "/repo",
+        baseRef: "main",
+        branch: "feature/test",
+        strategy: "worktree",
+        workspacePath: "/repo/.workspace/worktrees/session-1",
+        cleanupPolicy: "delete-if-clean",
+      });
+
+      expect(workspace.id).toMatch(/^workspace_/);
+      expect(workspace.sessionId).toBe(session.id);
+      expect(workspace.strategy).toBe("worktree");
+      expect(workspace.workspacePath).toBe("/repo/.workspace/worktrees/session-1");
+      expect(workspace.cleanupPolicy).toBe("delete-if-clean");
+      expect(storeGetWorkspace(workspace.id)).toEqual(workspace);
+      expect(storeGetWorkspaceBySession(session.id)).toEqual(workspace);
+    });
+
+    test("updates an existing workspace without losing prior fields", () => {
+      const env = storeCreateEnvironment({ secret: "env-secret" });
+      const session = storeCreateSession({ environmentId: env.id });
+
+      const created = storeUpsertWorkspace(session.id, {
+        environmentId: env.id,
+        sourceRoot: "/repo",
+        repoRoot: "/repo",
+        strategy: "worktree",
+        workspacePath: "/repo/.workspace/worktrees/session-1",
+      });
+      const updated = storeUpsertWorkspace(session.id, {
+        branch: "feature/updated",
+        cleanupPolicy: "delete-on-close",
+      });
+
+      expect(updated.id).toBe(created.id);
+      expect(updated.environmentId).toBe(env.id);
+      expect(updated.sourceRoot).toBe("/repo");
+      expect(updated.branch).toBe("feature/updated");
+      expect(updated.cleanupPolicy).toBe("delete-on-close");
+      expect(updated.updatedAt.getTime()).toBeGreaterThanOrEqual(created.updatedAt.getTime());
+    });
+
+    test("removes workspace rows when the session is deleted", () => {
+      const session = storeCreateSession({});
+      const workspace = storeUpsertWorkspace(session.id, {
+        sourceRoot: "/repo",
+        strategy: "same-dir",
+        workspacePath: "/repo",
+      });
+
+      expect(storeDeleteSession(session.id)).toBe(true);
+      expect(storeGetWorkspace(workspace.id)).toBeUndefined();
+      expect(storeGetWorkspaceBySession(session.id)).toBeUndefined();
+    });
+  });
+
+  // ---------- Session State ----------
+
+  describe("storeUpsertSessionState / storeGetSessionState", () => {
+    test("creates durable per-session runtime state", () => {
+      const session = storeCreateSession({});
+      const state = storeUpsertSessionState(session.id, {
+        model: "claude-opus-4-5",
+        permissionMode: "plan",
+        thinkingEffort: "high",
+        selectedRepos: ["repo-a", "repo-b"],
+        commandProfile: "safe-shell",
+      });
+
+      expect(state.sessionId).toBe(session.id);
+      expect(state.model).toBe("claude-opus-4-5");
+      expect(state.permissionMode).toBe("plan");
+      expect(state.thinkingEffort).toBe("high");
+      expect(state.selectedRepos).toEqual(["repo-a", "repo-b"]);
+      expect(state.commandProfile).toBe("safe-shell");
+      expect(storeGetSessionState(session.id)).toEqual(state);
+    });
+
+    test("partially updates session state and preserves unspecified values", () => {
+      const session = storeCreateSession({});
+      const created = storeUpsertSessionState(session.id, {
+        model: "claude-sonnet-4-6",
+        permissionMode: "default",
+        thinkingEffort: "medium",
+        selectedRepos: ["repo-a"],
+      });
+      const updated = storeUpsertSessionState(session.id, {
+        permissionMode: "acceptEdits",
+        commandProfile: "workspace-profile",
+      });
+
+      expect(updated.model).toBe("claude-sonnet-4-6");
+      expect(updated.permissionMode).toBe("acceptEdits");
+      expect(updated.thinkingEffort).toBe("medium");
+      expect(updated.selectedRepos).toEqual(["repo-a"]);
+      expect(updated.commandProfile).toBe("workspace-profile");
+      expect(updated.updatedAt.getTime()).toBeGreaterThanOrEqual(created.updatedAt.getTime());
+    });
+
+    test("removes session state rows when the session is deleted", () => {
+      const session = storeCreateSession({});
+      storeUpsertSessionState(session.id, {
+        model: "claude-sonnet-4-6",
+      });
+
+      expect(storeDeleteSession(session.id)).toBe(true);
+      expect(storeGetSessionState(session.id)).toBeUndefined();
     });
   });
 
@@ -321,14 +459,16 @@ describe("store", () => {
 
   describe("storeCreateWorkItem", () => {
     test("creates work item with defaults", () => {
+      const env = storeCreateEnvironment({ secret: "s" });
+      const session = storeCreateSession({ environmentId: env.id });
       const item = storeCreateWorkItem({
-        environmentId: "env1",
-        sessionId: "ses1",
+        environmentId: env.id,
+        sessionId: session.id,
         secret: "sec1",
       });
       expect(item.id).toMatch(/^work_/);
-      expect(item.environmentId).toBe("env1");
-      expect(item.sessionId).toBe("ses1");
+      expect(item.environmentId).toBe(env.id);
+      expect(item.sessionId).toBe(session.id);
       expect(item.state).toBe("pending");
       expect(item.secret).toBe("sec1");
     });
@@ -340,33 +480,43 @@ describe("store", () => {
     });
 
     test("returns created work item", () => {
-      const item = storeCreateWorkItem({ environmentId: "env1", sessionId: "ses1", secret: "s" });
-      expect(storeGetWorkItem(item.id)).toBe(item);
+      const env = storeCreateEnvironment({ secret: "s" });
+      const session = storeCreateSession({ environmentId: env.id });
+      const item = storeCreateWorkItem({ environmentId: env.id, sessionId: session.id, secret: "s" });
+      expect(storeGetWorkItem(item.id)).toEqual(item);
     });
   });
 
   describe("storeGetPendingWorkItem", () => {
     test("returns pending work for environment", () => {
-      const item = storeCreateWorkItem({ environmentId: "env1", sessionId: "ses1", secret: "s" });
-      const found = storeGetPendingWorkItem("env1");
+      const env = storeCreateEnvironment({ secret: "s" });
+      const session = storeCreateSession({ environmentId: env.id });
+      const item = storeCreateWorkItem({ environmentId: env.id, sessionId: session.id, secret: "s" });
+      const found = storeGetPendingWorkItem(env.id);
       expect(found?.id).toBe(item.id);
     });
 
     test("returns undefined when no pending work", () => {
-      storeCreateWorkItem({ environmentId: "env1", sessionId: "ses1", secret: "s" });
+      const env = storeCreateEnvironment({ secret: "s" });
+      const session = storeCreateSession({ environmentId: env.id });
+      storeCreateWorkItem({ environmentId: env.id, sessionId: session.id, secret: "s" });
       expect(storeGetPendingWorkItem("env2")).toBeUndefined();
     });
 
     test("skips non-pending items", () => {
-      const item = storeCreateWorkItem({ environmentId: "env1", sessionId: "ses1", secret: "s" });
+      const env = storeCreateEnvironment({ secret: "s" });
+      const session = storeCreateSession({ environmentId: env.id });
+      const item = storeCreateWorkItem({ environmentId: env.id, sessionId: session.id, secret: "s" });
       storeUpdateWorkItem(item.id, { state: "dispatched" });
-      expect(storeGetPendingWorkItem("env1")).toBeUndefined();
+      expect(storeGetPendingWorkItem(env.id)).toBeUndefined();
     });
   });
 
   describe("storeUpdateWorkItem", () => {
     test("updates existing work item", () => {
-      const item = storeCreateWorkItem({ environmentId: "env1", sessionId: "ses1", secret: "s" });
+      const env = storeCreateEnvironment({ secret: "s" });
+      const session = storeCreateSession({ environmentId: env.id });
+      const item = storeCreateWorkItem({ environmentId: env.id, sessionId: session.id, secret: "s" });
       expect(storeUpdateWorkItem(item.id, { state: "acked" })).toBe(true);
       expect(storeGetWorkItem(item.id)?.state).toBe("acked");
     });
@@ -381,16 +531,26 @@ describe("store", () => {
   describe("storeReset", () => {
     test("clears all data", () => {
       storeCreateUser("alice");
-      storeCreateEnvironment({ secret: "s" });
-      storeCreateSession({});
-      storeCreateWorkItem({ environmentId: "env1", sessionId: "ses1", secret: "s" });
+      const env = storeCreateEnvironment({ secret: "s" });
+      const session = storeCreateSession({ environmentId: env.id });
+      storeUpsertWorkspace(session.id, {
+        sourceRoot: "/repo",
+        strategy: "same-dir",
+        workspacePath: "/repo",
+      });
+      storeUpsertSessionState(session.id, {
+        model: "claude-sonnet-4-6",
+      });
+      storeCreateWorkItem({ environmentId: env.id, sessionId: session.id, secret: "s" });
 
       storeReset();
 
       expect(storeGetUser("alice")).toBeUndefined();
       expect(storeListActiveEnvironments()).toHaveLength(0);
       expect(storeListSessions()).toHaveLength(0);
-      expect(storeGetPendingWorkItem("env1")).toBeUndefined();
+      expect(storeGetWorkspaceBySession(session.id)).toBeUndefined();
+      expect(storeGetSessionState(session.id)).toBeUndefined();
+      expect(storeGetPendingWorkItem(env.id)).toBeUndefined();
     });
   });
 });

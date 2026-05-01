@@ -62,19 +62,17 @@ describe("Disconnect Monitor Logic", () => {
     expect(updated?.status).toBe("active");
   });
 
-  test("session becomes inactive when updatedAt is too old", () => {
+  test("running session becomes interrupted when updatedAt is too old and no subprocess remains", () => {
     const session = storeCreateSession({});
-    storeUpdateSession(session.id, { status: "running" });
-    const rec = storeGetSession(session.id);
-    expect(rec).toBeTruthy();
-    if (!rec) return;
-
-    rec.updatedAt = new Date(Date.now() - 300 * 1000 * 2 - 60000);
+    storeUpdateSession(session.id, {
+      status: "running",
+      updatedAt: new Date(Date.now() - 300 * 1000 * 2 - 60000),
+    });
 
     runDisconnectMonitorSweep();
 
     const updated = storeGetSession(session.id);
-    expect(updated?.status).toBe("inactive");
+    expect(updated?.status).toBe("interrupted");
   });
 
   test("session stays running when recently updated", () => {
@@ -89,11 +87,10 @@ describe("Disconnect Monitor Logic", () => {
 
   test("session timeout publishes an inactive session_status event", () => {
     const session = storeCreateSession({});
-    storeUpdateSession(session.id, { status: "idle" });
-    const rec = storeGetSession(session.id);
-    expect(rec).toBeTruthy();
-    if (!rec) return;
-    rec.updatedAt = new Date(Date.now() - 300 * 1000 * 2 - 60000);
+    storeUpdateSession(session.id, {
+      status: "idle",
+      updatedAt: new Date(Date.now() - 300 * 1000 * 2 - 60000),
+    });
 
     const bus = getEventBus(session.id);
     const events: Array<{ type: string; payload: { status?: string } }> = [];

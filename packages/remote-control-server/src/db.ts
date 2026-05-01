@@ -7,6 +7,10 @@ const DB_PATH = process.env.DATABASE_URL || join(process.cwd(), "rcs.sqlite");
 export let db: Database;
 
 export function initDb() {
+  if (db) {
+    return db;
+  }
+
   log(`[DB] Initializing database at ${DB_PATH}`);
   db = new Database(DB_PATH, { create: true });
 
@@ -61,6 +65,35 @@ export function initDb() {
       FOREIGN KEY (environment_id) REFERENCES environments(id)
     );
 
+    CREATE TABLE IF NOT EXISTS workspaces (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL UNIQUE,
+      environment_id TEXT,
+      source_root TEXT NOT NULL,
+      repo_root TEXT,
+      base_ref TEXT,
+      branch TEXT,
+      strategy TEXT NOT NULL,
+      workspace_path TEXT NOT NULL,
+      cleanup_policy TEXT NOT NULL DEFAULT 'keep',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+      FOREIGN KEY (environment_id) REFERENCES environments(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS session_state (
+      session_id TEXT PRIMARY KEY,
+      model TEXT,
+      permission_mode TEXT,
+      thinking_effort TEXT,
+      selected_repos TEXT,
+      command_profile TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS session_owners (
       session_id TEXT NOT NULL,
       owner_uuid TEXT NOT NULL,
@@ -106,6 +139,9 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);
     CREATE INDEX IF NOT EXISTS idx_session_owners_uuid ON session_owners(owner_uuid);
     CREATE INDEX IF NOT EXISTS idx_environments_worker_type ON environments(worker_type);
+    CREATE INDEX IF NOT EXISTS idx_workspaces_environment_id ON workspaces(environment_id);
+    CREATE INDEX IF NOT EXISTS idx_workspaces_source_root ON workspaces(source_root);
+    CREATE INDEX IF NOT EXISTS idx_workspaces_workspace_path ON workspaces(workspace_path);
 
     CREATE TABLE IF NOT EXISTS pending_permissions (
       id TEXT PRIMARY KEY,
@@ -119,4 +155,8 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_pending_permissions_session ON pending_permissions(session_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_permissions_session_request ON pending_permissions(session_id, request_id);
   `);
+
+  return db;
 }
+
+initDb();

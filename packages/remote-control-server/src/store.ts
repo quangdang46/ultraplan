@@ -39,6 +39,36 @@ export interface SessionRecord {
   updatedAt: Date;
 }
 
+export type WorkspaceStrategy = "worktree" | "copy" | "temp-clone" | "same-dir";
+
+export type WorkspaceCleanupPolicy = "keep" | "delete-on-close" | "delete-if-clean";
+
+export interface WorkspaceRecord {
+  id: string;
+  sessionId: string;
+  environmentId: string | null;
+  sourceRoot: string;
+  repoRoot: string | null;
+  baseRef: string | null;
+  branch: string | null;
+  strategy: WorkspaceStrategy;
+  workspacePath: string;
+  cleanupPolicy: WorkspaceCleanupPolicy;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SessionStateRecord {
+  sessionId: string;
+  model: string | null;
+  permissionMode: string | null;
+  thinkingEffort: string | null;
+  selectedRepos: string[];
+  commandProfile: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface WorkItemRecord {
   id: string;
   environmentId: string;
@@ -66,6 +96,13 @@ function rowToUser(row: Record<string, unknown>): UserRecord {
     username: row.username as string,
     createdAt: new Date(row.created_at as string),
   };
+}
+
+function rowToStringArray(value: unknown): string[] {
+  if (!value) return [];
+  const parsed = JSON.parse(value as string);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((entry): entry is string => typeof entry === "string");
 }
 
 function rowToEnvironment(row: Record<string, unknown>): EnvironmentRecord {
@@ -98,6 +135,36 @@ function rowToSession(row: Record<string, unknown>): SessionRecord {
     permissionMode: (row.permission_mode as string | null) ?? null,
     workerEpoch: row.worker_epoch as number,
     username: (row.username as string | null) ?? null,
+    createdAt: new Date(row.created_at as string),
+    updatedAt: new Date(row.updated_at as string),
+  };
+}
+
+function rowToWorkspace(row: Record<string, unknown>): WorkspaceRecord {
+  return {
+    id: row.id as string,
+    sessionId: row.session_id as string,
+    environmentId: (row.environment_id as string | null) ?? null,
+    sourceRoot: row.source_root as string,
+    repoRoot: (row.repo_root as string | null) ?? null,
+    baseRef: (row.base_ref as string | null) ?? null,
+    branch: (row.branch as string | null) ?? null,
+    strategy: row.strategy as WorkspaceStrategy,
+    workspacePath: row.workspace_path as string,
+    cleanupPolicy: row.cleanup_policy as WorkspaceCleanupPolicy,
+    createdAt: new Date(row.created_at as string),
+    updatedAt: new Date(row.updated_at as string),
+  };
+}
+
+function rowToSessionState(row: Record<string, unknown>): SessionStateRecord {
+  return {
+    sessionId: row.session_id as string,
+    model: (row.model as string | null) ?? null,
+    permissionMode: (row.permission_mode as string | null) ?? null,
+    thinkingEffort: (row.thinking_effort as string | null) ?? null,
+    selectedRepos: rowToStringArray(row.selected_repos),
+    commandProfile: (row.command_profile as string | null) ?? null,
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
   };
@@ -254,8 +321,8 @@ export function storeUpdateSession(
   if (patch.title !== undefined) { sets.push("title = ?"); values.push(patch.title); }
   if (patch.status !== undefined) { sets.push("status = ?"); values.push(patch.status); }
   if (patch.workerEpoch !== undefined) { sets.push("worker_epoch = ?"); values.push(patch.workerEpoch); }
-  if (sets.length === 0) return false;
-  sets.push("updated_at = ?"); values.push(new Date().toISOString());
+  sets.push("updated_at = ?");
+  values.push((patch.updatedAt ?? new Date()).toISOString());
   values.push(id);
   const result = db.prepare(`UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`).run(...(values as import("bun:sqlite").SQLQueryBindings[]));
   return result.changes > 0;
@@ -276,6 +343,191 @@ export function storeListSessionsByEnvironment(envId: string): SessionRecord[] {
 export function storeDeleteSession(id: string): boolean {
   const result = db.prepare("DELETE FROM sessions WHERE id = ?").run(id);
   return result.changes > 0;
+}
+
+// ---------- Workspace ----------
+
+export function storeGetWorkspace(id: string): WorkspaceRecord | undefined {
+  const row = db.prepare("SELECT * FROM workspaces WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+  return row ? rowToWorkspace(row) : undefined;
+}
+
+export function storeGetWorkspaceBySession(sessionId: string): WorkspaceRecord | undefined {
+  const row = db.prepare("SELECT * FROM workspaces WHERE session_id = ?").get(sessionId) as Record<string, unknown> | undefined;
+  return row ? rowToWorkspace(row) : undefined;
+}
+
+export function storeUpsertWorkspace(
+  sessionId: string,
+  patch: {
+    environmentId?: string | null;
+    sourceRoot?: string;
+    repoRoot?: string | null;
+    baseRef?: string | null;
+    branch?: string | null;
+    strategy?: WorkspaceStrategy;
+    workspacePath?: string;
+    cleanupPolicy?: WorkspaceCleanupPolicy;
+  },
+): WorkspaceRecord {
+  const now = new Date().toISOString();
+  const existing = storeGetWorkspaceBySession(sessionId);
+
+  if (!existing) {
+    if (!patch.sourceRoot || !patch.strategy || !patch.workspacePath) {
+      throw new Error(
+        "sourceRoot, strategy, and workspacePath are required when creating a workspace",
+      );
+    }
+
+    const id = `workspace_${randomUUID().replace(/-/g, "")}`;
+    db.prepare(`
+      INSERT INTO workspaces (
+        id, session_id, environment_id, source_root, repo_root, base_ref, branch,
+        strategy, workspace_path, cleanup_policy, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      sessionId,
+      patch.environmentId ?? null,
+      patch.sourceRoot,
+      patch.repoRoot ?? null,
+      patch.baseRef ?? null,
+      patch.branch ?? null,
+      patch.strategy,
+      patch.workspacePath,
+      patch.cleanupPolicy ?? "keep",
+      now,
+      now,
+    );
+  } else {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+
+    if (patch.environmentId !== undefined) {
+      sets.push("environment_id = ?");
+      values.push(patch.environmentId);
+    }
+    if (patch.sourceRoot !== undefined) {
+      sets.push("source_root = ?");
+      values.push(patch.sourceRoot);
+    }
+    if (patch.repoRoot !== undefined) {
+      sets.push("repo_root = ?");
+      values.push(patch.repoRoot);
+    }
+    if (patch.baseRef !== undefined) {
+      sets.push("base_ref = ?");
+      values.push(patch.baseRef);
+    }
+    if (patch.branch !== undefined) {
+      sets.push("branch = ?");
+      values.push(patch.branch);
+    }
+    if (patch.strategy !== undefined) {
+      sets.push("strategy = ?");
+      values.push(patch.strategy);
+    }
+    if (patch.workspacePath !== undefined) {
+      sets.push("workspace_path = ?");
+      values.push(patch.workspacePath);
+    }
+    if (patch.cleanupPolicy !== undefined) {
+      sets.push("cleanup_policy = ?");
+      values.push(patch.cleanupPolicy);
+    }
+
+    if (sets.length > 0) {
+      sets.push("updated_at = ?");
+      values.push(now);
+      values.push(sessionId);
+      db.prepare(`UPDATE workspaces SET ${sets.join(", ")} WHERE session_id = ?`).run(
+        ...(values as import("bun:sqlite").SQLQueryBindings[]),
+      );
+    }
+  }
+
+  return rowToWorkspace(
+    db.prepare("SELECT * FROM workspaces WHERE session_id = ?").get(sessionId) as Record<string, unknown>,
+  );
+}
+
+// ---------- Session State ----------
+
+export function storeGetSessionState(sessionId: string): SessionStateRecord | undefined {
+  const row = db.prepare("SELECT * FROM session_state WHERE session_id = ?").get(sessionId) as Record<string, unknown> | undefined;
+  return row ? rowToSessionState(row) : undefined;
+}
+
+export function storeUpsertSessionState(
+  sessionId: string,
+  patch: {
+    model?: string | null;
+    permissionMode?: string | null;
+    thinkingEffort?: string | null;
+    selectedRepos?: string[] | null;
+    commandProfile?: string | null;
+  },
+): SessionStateRecord {
+  const now = new Date().toISOString();
+  const existing = storeGetSessionState(sessionId);
+
+  if (!existing) {
+    db.prepare(`
+      INSERT INTO session_state (
+        session_id, model, permission_mode, thinking_effort, selected_repos,
+        command_profile, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      sessionId,
+      patch.model ?? null,
+      patch.permissionMode ?? null,
+      patch.thinkingEffort ?? null,
+      JSON.stringify(patch.selectedRepos ?? []),
+      patch.commandProfile ?? null,
+      now,
+      now,
+    );
+  } else {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+
+    if (patch.model !== undefined) {
+      sets.push("model = ?");
+      values.push(patch.model);
+    }
+    if (patch.permissionMode !== undefined) {
+      sets.push("permission_mode = ?");
+      values.push(patch.permissionMode);
+    }
+    if (patch.thinkingEffort !== undefined) {
+      sets.push("thinking_effort = ?");
+      values.push(patch.thinkingEffort);
+    }
+    if (patch.selectedRepos !== undefined) {
+      sets.push("selected_repos = ?");
+      values.push(JSON.stringify(patch.selectedRepos ?? []));
+    }
+    if (patch.commandProfile !== undefined) {
+      sets.push("command_profile = ?");
+      values.push(patch.commandProfile);
+    }
+
+    if (sets.length > 0) {
+      sets.push("updated_at = ?");
+      values.push(now);
+      values.push(sessionId);
+      db.prepare(`UPDATE session_state SET ${sets.join(", ")} WHERE session_id = ?`).run(
+        ...(values as import("bun:sqlite").SQLQueryBindings[]),
+      );
+    }
+  }
+
+  return rowToSessionState(
+    db.prepare("SELECT * FROM session_state WHERE session_id = ?").get(sessionId) as Record<string, unknown>,
+  );
 }
 
 // ---------- Session Worker ----------
@@ -514,6 +766,8 @@ export function storeReset() {
     DELETE FROM events;
     DELETE FROM pending_permissions;
     DELETE FROM session_owners;
+    DELETE FROM session_state;
+    DELETE FROM workspaces;
     DELETE FROM session_workers;
     DELETE FROM work_items;
     DELETE FROM sessions;

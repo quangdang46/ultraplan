@@ -8,6 +8,7 @@ import {
   isSessionClosedStatus,
   listWebSessionSummariesByOwnerUuid,
   listWebSessionsByOwnerUuid,
+  resolveExistingWebSessionId,
   resolveOwnedWebSessionId,
   toWebSessionResponse,
 } from "../../services/session";
@@ -61,7 +62,12 @@ app.get("/sessions/all", uuidAuth, async (c) => {
 /** GET /web/sessions/:id — Session detail */
 app.get("/sessions/:id", uuidAuth, async (c) => {
   const uuid = c.get("uuid")!;
-  const sessionId = resolveOwnedWebSessionId(c.req.param("id")!, uuid);
+  const requestedSessionId = c.req.param("id")!;
+  const existingSessionId = resolveExistingWebSessionId(requestedSessionId);
+  if (!existingSessionId) {
+    return c.json({ error: { type: "not_found", message: "Session not found" } }, 404);
+  }
+  const sessionId = resolveOwnedWebSessionId(requestedSessionId, uuid);
   if (!sessionId) {
     return c.json({ error: { type: "forbidden", message: "Not your session" } }, 403);
   }
@@ -81,7 +87,12 @@ app.get("/sessions/:id", uuidAuth, async (c) => {
 /** GET /web/sessions/:id/history — Historical events for session */
 app.get("/sessions/:id/history", uuidAuth, async (c) => {
   const uuid = c.get("uuid")!;
-  const sessionId = resolveOwnedWebSessionId(c.req.param("id")!, uuid);
+  const requestedSessionId = c.req.param("id")!;
+  const existingSessionId = resolveExistingWebSessionId(requestedSessionId);
+  if (!existingSessionId) {
+    return c.json({ error: { type: "not_found", message: "Session not found" } }, 404);
+  }
+  const sessionId = resolveOwnedWebSessionId(requestedSessionId, uuid);
   if (!sessionId) {
     return c.json({ error: { type: "forbidden", message: "Not your session" } }, 403);
   }
@@ -98,7 +109,12 @@ app.get("/sessions/:id/history", uuidAuth, async (c) => {
 /** SSE /web/sessions/:id/events — Real-time event stream */
 app.get("/sessions/:id/events", uuidAuth, async (c) => {
   const uuid = c.get("uuid")!;
-  const sessionId = resolveOwnedWebSessionId(c.req.param("id")!, uuid);
+  const requestedSessionId = c.req.param("id")!;
+  const existingSessionId = resolveExistingWebSessionId(requestedSessionId);
+  if (!existingSessionId) {
+    return c.json({ error: { type: "not_found", message: "Session not found" } }, 404);
+  }
+  const sessionId = resolveOwnedWebSessionId(requestedSessionId, uuid);
   if (!sessionId) {
     return c.json({ error: { type: "forbidden", message: "Not your session" } }, 403);
   }
