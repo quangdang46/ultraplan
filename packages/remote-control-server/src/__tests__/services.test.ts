@@ -86,6 +86,11 @@ describe("Session Service", () => {
       const resp = createSession({ username: "alice" });
       expect(resp.username).toBe("alice");
     });
+
+    test("returns persisted cwd when created with a workspace path", () => {
+      const resp = createSession({ cwd: "/tmp/ultraplan-session" });
+      expect(resp.cwd).toBe("/tmp/ultraplan-session");
+    });
   });
 
   describe("createCodeSession", () => {

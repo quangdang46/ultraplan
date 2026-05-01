@@ -20,6 +20,14 @@ type Props = {
   quote: string | null;
   onClearQuote: () => void;
   sessionId?: string | null;
+  cwd?: string | null;
+  onOpenSearch?: () => void;
+  onOpenHistory?: () => void;
+  onOpenMcp?: () => void;
+  onOpenMemory?: () => void;
+  onOpenDiagnostics?: () => void;
+  onToggleAgents?: () => void;
+  onToggleTasks?: () => void;
 };
 
 type SuggestionViewItem = {
@@ -55,7 +63,19 @@ function HighlightMatch({ text, query }: { text: string; query: string }) {
   );
 }
 
-export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
+export const ActionBar = ({
+  quote,
+  onClearQuote,
+  sessionId,
+  cwd,
+  onOpenSearch,
+  onOpenHistory,
+  onOpenMcp,
+  onOpenMemory,
+  onOpenDiagnostics,
+  onToggleAgents,
+  onToggleTasks,
+}: Props) => {
   const [reply, setReply] = useState("");
   const [cursorPos, setCursorPos] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -82,13 +102,20 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
 	const inputRef = useRef<HTMLInputElement>(null);
 	const requestSeqRef = useRef(0);
 	const client = getApiClient();
-  const { sendMessage, executeSlashCommand, cancelStream, isStreaming } = useStreamContext();
+  const {
+    sendMessage,
+    executeSlashCommand,
+    cancelStream,
+    clearMessages,
+    isStreaming,
+  } = useStreamContext();
 
   // Tab completion state
   const [lastTabTime, setLastTabTime] = useState(0);
 
   const triggerState = useMemo(() => parseTriggerState(reply, cursorPos), [reply, cursorPos]);
   const taggedFiles = useMemo(() => extractTaggedFiles(reply), [reply]);
+  const suggestionCwd = cwd?.trim() || runtimeState.cwd;
 
   // Load command history from localStorage on mount
   useEffect(() => {
@@ -130,7 +157,7 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
 		const loadState = async () => {
 			try {
 				await ensureApiAuthenticated(client);
-				const state = await client.getState();
+				const state = await client.getState(sessionId ?? undefined);
 				if (cancelled) return;
 				setRuntimeState({
 					gitBranch: state.gitBranch?.trim() || "",
@@ -152,7 +179,7 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
     return () => {
       cancelled = true;
     };
-  }, [client]);
+  }, [client, sessionId]);
 
   useEffect(() => {
     if (!triggerState) {
@@ -174,7 +201,7 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
       setSuggestionError(null);
       try {
         if (triggerState.trigger === "@") {
-          const result = await client.suggestFiles(triggerState.query);
+          const result = await client.suggestFiles(triggerState.query, suggestionCwd || undefined);
           if (isCancelled || seq !== requestSeqRef.current) return;
           const mapped = result.items.map((item: FileSuggestion) => ({
             key: item.id ?? item.path ?? item.displayText,
@@ -187,7 +214,7 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
           setSuggestions(mapped);
           setSuggestionsMeta({ isPartial: result.isPartial, capApplied: result.capApplied });
         } else {
-          const result = await client.suggestCommands(triggerState.query);
+          const result = await client.suggestCommands(triggerState.query, suggestionCwd || undefined);
           if (isCancelled || seq !== requestSeqRef.current) return;
           const mapped = result.items.map((item: CommandSuggestion) => ({
             key: item.name,
@@ -217,7 +244,7 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
       isCancelled = true;
       clearTimeout(timer);
     };
-  }, [client, triggerState]);
+  }, [client, suggestionCwd, triggerState]);
 
   const applySuggestion = (index: number) => {
     if (!triggerState) return;
@@ -268,6 +295,89 @@ export const ActionBar = ({ quote, onClearQuote, sessionId }: Props) => {
     const quotePayload: ReplyQuote | undefined = quote ? { text: quote } : undefined;
 
     if (text.startsWith("/")) {
+      const commandName = text.slice(1).trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+      let handledLocally = true;
+
+      switch (commandName) {
+        case "clear":
+          clearMessages(sessionId ?? null);
+          if (quote) {
+            onClearQuote();
+          }
+          break;
+        case "help":
+        case "keybindings":
+          setShortcutHelpOpen(true);
+          break;
+        case "rewind":
+          if (sessionId) {
+            await handleRewind();
+          } else {
+            handledLocally = false;
+          }
+          break;
+        case "search":
+          if (onOpenSearch) {
+            onOpenSearch();
+          } else {
+            handledLocally = false;
+          }
+          break;
+        case "history":
+          if (onOpenHistory) {
+            onOpenHistory();
+          } else {
+            handledLocally = false;
+          }
+          break;
+        case "mcp":
+          if (onOpenMcp) {
+            onOpenMcp();
+          } else {
+            handledLocally = false;
+          }
+          break;
+        case "memory":
+          if (onOpenMemory) {
+            onOpenMemory();
+          } else {
+            handledLocally = false;
+          }
+          break;
+        case "doctor":
+          if (onOpenDiagnostics) {
+            onOpenDiagnostics();
+          } else {
+            handledLocally = false;
+          }
+          break;
+        case "agents":
+          if (onToggleAgents) {
+            onToggleAgents();
+          } else {
+            handledLocally = false;
+          }
+          break;
+        case "tasks":
+          if (onToggleTasks) {
+            onToggleTasks();
+          } else {
+            handledLocally = false;
+          }
+          break;
+        default:
+          handledLocally = false;
+          break;
+      }
+
+      if (handledLocally) {
+        setReply("");
+        setCursorPos(0);
+        setSuggestions([]);
+        setSuggestionError(null);
+        return;
+      }
+
       await executeSlashCommand(text, sessionId ?? undefined);
       setReply("");
       setCursorPos(0);

@@ -17,7 +17,8 @@
 import { type ChildProcess, spawn } from "child_process";
 import { createInterface } from "readline";
 import { publishSessionEvent } from "./transport";
-import { updateSessionStatus } from "./session";
+import { getSession, updateSessionStatus } from "./session";
+import { getSessionRuntimeState } from "./session-runtime-context";
 import { storeUpsertSessionWorker } from "../store";
 import { log as logInfo, error as logError } from "../logger";
 
@@ -930,21 +931,43 @@ export function toCliSessionId(sessionId: string): string {
   ].join("-");
 }
 
-function spawnSubprocess(sessionId: string, cwd: string, resume: boolean): ChildProcess {
-  // Re-exec the same bun binary with the CLI entrypoint
-  const execPath = process.execPath; // e.g. /usr/local/bin/bun
+type SubprocessLaunchOptions = {
+  model?: string;
+  permissionMode?: string;
+};
+
+export function resolveSubprocessLaunchOptions(
+  sessionId: string,
+): SubprocessLaunchOptions {
+  const session = getSession(sessionId);
+  const sessionState = getSessionRuntimeState(sessionId);
+
+  const model = sessionState?.model?.trim() || undefined;
+  const permissionMode =
+    sessionState?.permissionMode?.trim() ||
+    session?.permission_mode?.trim() ||
+    undefined;
+
+  return {
+    ...(model ? { model } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+  };
+}
+
+export function buildSubprocessArgs(
+  sessionId: string,
+  resume: boolean,
+  launchOptions: SubprocessLaunchOptions,
+): string[] {
   const cliSessionId = toCliSessionId(sessionId);
 
-  // The CLI entrypoint relative to project root
-  // Walk up from __dirname (packages/remote-control-server/src/services/) to root
   const { resolve, dirname } = require("path") as typeof import("path");
   const { fileURLToPath } = require("url") as typeof import("url");
-  // __dirname in ESM context
   const serviceDir = dirname(fileURLToPath(import.meta.url));
   const projectRoot = resolve(serviceDir, "../../../..");
   const cliPath = resolve(projectRoot, "src/entrypoints/cli.tsx");
 
-  const args = [
+  return [
     "--smol",          // bun flag for faster startup
     cliPath,           // the CLI entrypoint
     "--print",
@@ -953,7 +976,21 @@ function spawnSubprocess(sessionId: string, cwd: string, resume: boolean): Child
     ...(resume ? ["--resume", cliSessionId] : ["--session-id", cliSessionId]),
     "--input-format", "stream-json",
     "--output-format", "stream-json",
+    ...(launchOptions.model ? ["--model", launchOptions.model] : []),
+    ...(launchOptions.permissionMode
+      ? ["--permission-mode", launchOptions.permissionMode]
+      : []),
   ];
+}
+
+function spawnSubprocess(sessionId: string, cwd: string, resume: boolean): ChildProcess {
+  // Re-exec the same bun binary with the CLI entrypoint
+  const execPath = process.execPath; // e.g. /usr/local/bin/bun
+  const args = buildSubprocessArgs(
+    sessionId,
+    resume,
+    resolveSubprocessLaunchOptions(sessionId),
+  );
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -985,8 +1022,10 @@ class SubprocessManager {
       throw new Error(`Subprocess capacity reached (${this.capacity} concurrent sessions)`);
     }
 
+    const launchOptions = resolveSubprocessLaunchOptions(sessionId);
     const child = spawnSubprocess(sessionId, cwd, resume);
     const handle = new SubprocessHandleImpl(sessionId, child, cwd);
+    handle.permissionState.mode = launchOptions.permissionMode ?? "default";
     this.handles.set(sessionId, handle);
     updateSessionStatus(sessionId, "running");
 

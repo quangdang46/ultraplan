@@ -17,6 +17,11 @@ const streamContext = {
 };
 
 const apiClient = {
+  hasApiKey: vi.fn(() => true),
+  authValidate: vi.fn(async () => ({ valid: true })),
+  clearApiKey: vi.fn(),
+  authInit: vi.fn(async () => ({ tempToken: 'temp-token' })),
+  authVerify: vi.fn(async () => {}),
   getState: vi.fn(async () => ({
     gitBranch: "main",
     model: "sonnet",
@@ -83,5 +88,19 @@ describe('ActionBar quote submit', () => {
       }, undefined);
     });
     expect(onClearQuote).toHaveBeenCalledTimes(1);
+  });
+
+  test('handles /clear locally without delegating to the stream', async () => {
+    render(<ActionBar quote={null} onClearQuote={vi.fn()} sessionId="session-1" />);
+
+    const input = screen.getByPlaceholderText('Reply…');
+    fireEvent.change(input, { target: { value: '/clear' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(streamContext.clearMessages).toHaveBeenCalledWith('session-1');
+    });
+    expect(streamContext.sendMessage).not.toHaveBeenCalled();
+    expect(streamContext.executeSlashCommand).not.toHaveBeenCalled();
   });
 });

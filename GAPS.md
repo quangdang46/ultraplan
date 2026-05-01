@@ -82,7 +82,7 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 | Live output while tool is running | ✅ Bash stdout in realtime | ✅ tool_output_delta events | OK |
 | Incremental tool input updates | ✅ | ✅ `tool_input_delta` handled | OK |
 | Full CLI-feel tool timeline | ✅ | ✅ start → input_delta → result | OK |
-| End-to-end multi-tool turn parity | ✅ | ⚠️ Needs complex turn verification | Medium |
+| End-to-end multi-tool turn parity | ✅ | ✅ Verified with real API/UI turns (multi-tool + replay) | OK |
 | Thinking + tool + response in one turn | ✅ | ✅ Transport works | OK |
 | Permission/tool parity end-to-end | ✅ | ✅ Verified | OK |
 | Full tool output source parity | ✅ | ✅ `message.content.tool_result` + `tool_use_result` | OK |
@@ -108,7 +108,7 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 | Inline permission card | ✅ In message flow | ✅ `PermissionPanel` | OK |
 | Approve/Deny buttons | ✅ `y/n` keyboard | ✅ Buttons | OK |
 | Edit tool input before approval | ✅ `e` key | ✅ `updatedInput` wired to API | OK |
-| Tool-specific permission card | ✅ Bash shows command, Edit shows diff | ⚠️ Needs diff preview verification | Medium |
+| Tool-specific permission card | ✅ Bash shows command, Edit shows diff | ⚠️ Exit-plan approval UI is covered; direct Edit diff approval remains unproven in the default runtime path | Medium |
 | Permission replay on reconnect | ✅ N/A (same process) | ✅ Replay via pending_permissions table | OK |
 | Always allow option | ✅ `a` key | ✅ `alwaysAllow` in API + UI | OK |
 
@@ -130,8 +130,8 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 | Feature | CLI | Current Web | Gap | Priority |
 |---------|-----|-------------|-----|----------|
 | Multi-line input | ✅ Shift+Enter | ✅ | OK |
-| File attachment (`@`) | ✅ Tab completion | ⚠️ Needs verification | Medium |
-| Slash commands | ✅ `/help`, `/model`, `/clear`... | ⚠️ Partial (security gates limit some) | Medium |
+| File attachment (`@`) | ✅ Tab completion | ✅ Verified in real UI (`@` suggestions + file refs) | OK |
+| Slash commands | ✅ `/help`, `/model`, `/clear`... | ⚠️ Core web-native commands now handled locally; full CLI catalog is still partial | Medium |
 | Input disabled while streaming | ✅ | ✅ | OK |
 | Cancel stream (Escape) | ✅ Ctrl+C / Escape | ✅ `cancelStream` | OK |
 | Command history (↑↓) | ✅ | ✅ Implemented in ActionBar.tsx | OK |
@@ -178,12 +178,12 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 | Plan mode | ✅ `/plan` | ✅ Plan approval UI exists | OK |
 | Agent/subagent | ✅ `AgentTool` | ✅ `AgentPanel` exists | OK |
 | Task list | ✅ `TodoWrite` | ✅ `TaskList` component | OK |
-| MCP servers | ✅ `/mcp` | ⚠️ Has API, `McpManagerDialog` exists | Medium |
-| Memory files (`CLAUDE.md`) | ✅ `/memory` | ⚠️ Has API, `MemoryDialog` exists | Medium |
-| Workspace search | ✅ Grep/Glob | ⚠️ Has API, `SearchDialog` exists | Low |
+| MCP servers | ✅ `/mcp` | ✅ Verified with real API + real UI dialog | OK |
+| Memory files (`CLAUDE.md`) | ✅ `/memory` | ✅ Verified with real API + real UI dialog | OK |
+| Workspace search | ✅ Grep/Glob | ✅ Verified with real API + real UI dialog | OK |
 | Diff view for edits | ✅ Inline diff | ✅ `DiffViewer` | OK |
 | Mermaid diagrams | N/A | ✅ `MermaidPanel` | Bonus |
-| Export conversation | ✅ `/export` | ⚠️ `ExportDialog` exists | Verify |
+| Export conversation | ✅ `/export` | ✅ Verified with real UI export dialog | OK |
 | Keyboard shortcuts help | ✅ `/help` | ✅ `KeyboardShortcutHelp` | OK |
 
 ---
@@ -213,7 +213,7 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 16. ~~Rate limit + context window warnings~~ ✅ Done
 17. ~~Error retry mechanism~~ ✅ Done
 18. ~~Session status indicator (active/interrupted/idle)~~ ✅ Done
-19. ~~Full slash command parity~~ ✅ Partial (security gates limit some commands)
+19. ~~Full slash command parity~~ ⚠️ Core web-native parity landed; full CLI command catalog still partial
 
 ### P3 — Low (nice to have)
 20. ~~Command history (↑↓)~~ ✅ Done
@@ -253,10 +253,9 @@ Phase 4: Production Ready
 
 ### High Priority (not yet implemented)
 - **Phase 3 architecture**: Embed CLI logic in-process (subprocess → direct QueryEngine)
-- **Tool-specific permission cards**: Diff preview for Edit tool, command preview for Bash
+- **Direct Edit approval parity**: default runtime path still does not surface a real Edit diff approval prompt end to end
 
 ### Medium Priority
-- File attachment (`@`) verification in UI
 - Slash command full parity (security gates limit some commands)
 - Export conversation dialog verification
 

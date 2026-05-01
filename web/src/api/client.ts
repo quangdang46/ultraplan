@@ -366,8 +366,30 @@ class ApiClient {
     });
   }
 
-  async getState(): Promise<StateResponse> {
-    return this.request<StateResponse>('/api/state');
+  async getState(sessionId?: string): Promise<StateResponse> {
+    const params = sessionId
+      ? `?sessionId=${encodeURIComponent(sessionId)}`
+      : '';
+    return this.request<StateResponse>(`/api/state${params}`);
+  }
+
+  async updateState(
+    patch: {
+      sessionId?: string;
+      model?: string | null;
+      permissionMode?: string | null;
+      thinkingEffort?: string | null;
+    },
+  ): Promise<{
+    success: boolean;
+    model?: string | null;
+    permissionMode?: string | null;
+    thinkingEffort?: string | null;
+  }> {
+    return this.request('/api/state', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
   }
 
   async suggestFiles(query: string, cwd?: string): Promise<FileSuggestionsResponse> {
@@ -444,7 +466,7 @@ class ApiClient {
   }
 
   // Workspace search
-  async searchWorkspace(query: string, limit?: number): Promise<{
+  async searchWorkspace(query: string, limit?: number, cwd?: string): Promise<{
     results: Array<{
       file: string;
       line: number;
@@ -456,6 +478,7 @@ class ApiClient {
   }> {
     const params = new URLSearchParams({ q: query });
     if (limit) params.set('limit', String(limit));
+    if (cwd) params.set('cwd', cwd);
     return this.request(`/api/search?${params.toString()}`);
   }
 
@@ -475,7 +498,7 @@ class ApiClient {
   }
 
   // MCP server management
-  async getMcpServers(cwd: string): Promise<{
+  async getMcpServers(cwd?: string): Promise<{
     servers: Array<{
       name: string;
       command: string;
@@ -484,7 +507,8 @@ class ApiClient {
       status: string;
     }>;
   }> {
-    return this.request(`/api/mcp?cwd=${encodeURIComponent(cwd)}`);
+    const params = cwd ? `?cwd=${encodeURIComponent(cwd)}` : '';
+    return this.request(`/api/mcp${params}`);
   }
 
   async addMcpServer(name: string, command: string, cwd: string, args?: string[], env?: Record<string, string>): Promise<void> {
@@ -501,16 +525,17 @@ class ApiClient {
   }
 
   // Memory files (CLAUDE.md)
-  async getMemoryFiles(): Promise<{
+  async getMemoryFiles(cwd?: string): Promise<{
     files: Array<{ path: string; content: string }>;
   }> {
-    return this.request('/api/memory');
+    const params = cwd ? `?cwd=${encodeURIComponent(cwd)}` : '';
+    return this.request(`/api/memory${params}`);
   }
 
-  async saveMemoryFile(path: string, content: string): Promise<void> {
+  async saveMemoryFile(path: string, content: string, cwd?: string): Promise<void> {
     await this.request('/api/memory', {
       method: 'PUT',
-      body: JSON.stringify({ path, content }),
+      body: JSON.stringify({ path, content, ...(cwd ? { cwd } : {}) }),
     });
   }
 }

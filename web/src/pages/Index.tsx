@@ -38,6 +38,7 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 function SessionHeader({
 	title,
+	sessionId,
 	status,
 	lastMessageAt,
 	onOpenSidebar,
@@ -59,6 +60,7 @@ function SessionHeader({
 	return (
 		<PanelTop
 			title={title}
+			sessionId={sessionId}
 			status={status}
 			lastMessageAt={lastMessageAt}
 			connectionState={connectionState}
@@ -205,6 +207,7 @@ const Index = () => {
 	// Shared PanelTop props factory
 	const panelTopProps = (openSidebar?: () => void) => ({
 		title: activeSession?.title ?? (chatId ? "Loading session" : "New session"),
+		sessionId: resolvedSessionId,
 		status: activeSession?.status ?? null,
 		lastMessageAt: activeSession?.lastMessageAt ?? null,
 		onOpenSidebar: openSidebar,
@@ -270,6 +273,14 @@ const Index = () => {
 					quote={quote}
 					onClearQuote={() => setQuote(null)}
 					sessionId={resolvedSessionId}
+					cwd={activeSession?.cwd ?? null}
+					onOpenSearch={() => setSearchOpen(true)}
+					onOpenHistory={() => setHistoryOpen(true)}
+					onOpenMcp={() => setMcpOpen(true)}
+					onOpenMemory={() => setMemoryOpen(true)}
+					onOpenDiagnostics={() => setDiagnosticsOpen(true)}
+					onToggleAgents={() => setAgentsOpen((v) => !v)}
+					onToggleTasks={() => setTasksOpen((v) => !v)}
 				/>
 			</div>
 		</StreamProvider>
@@ -431,15 +442,32 @@ const Index = () => {
 			)}
 			{searchOpen && (
 				<SearchDialog
+					cwd={activeSession?.cwd ?? null}
 					onClose={() => setSearchOpen(false)}
 					onSelect={(ref) => {
 						setQuote((q) => q ? `${q} ${ref}` : ref);
 					}}
 				/>
 			)}
-			{mcpOpen && <McpManagerDialog onClose={() => setMcpOpen(false)} />}
-			{memoryOpen && <MemoryDialog onClose={() => setMemoryOpen(false)} />}
-			{diagnosticsOpen && <DiagnosticsDialog onClose={() => setDiagnosticsOpen(false)} />}
+			{mcpOpen && (
+				<McpManagerDialog
+					cwd={activeSession?.cwd ?? null}
+					onClose={() => setMcpOpen(false)}
+				/>
+			)}
+			{memoryOpen && (
+				<MemoryDialog
+					cwd={activeSession?.cwd ?? null}
+					onClose={() => setMemoryOpen(false)}
+				/>
+			)}
+			{diagnosticsOpen && (
+				<DiagnosticsDialog
+					cwd={activeSession?.cwd ?? null}
+					sessionId={resolvedSessionId}
+					onClose={() => setDiagnosticsOpen(false)}
+				/>
+			)}
 			{bugReportOpen && (
 				<BugReportDialog
 					sessionId={resolvedSessionId}

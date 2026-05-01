@@ -11,10 +11,11 @@ interface McpServer {
 }
 
 type Props = {
+  cwd?: string | null;
   onClose: () => void;
 };
 
-export function McpManagerDialog({ onClose }: Props) {
+export function McpManagerDialog({ cwd: initialCwd, onClose }: Props) {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
@@ -37,7 +38,14 @@ export function McpManagerDialog({ onClose }: Props) {
   };
 
   useEffect(() => {
-    // Fetch the project cwd from the state endpoint
+    if (initialCwd) {
+      setCwd(initialCwd);
+      void load(initialCwd);
+      return;
+    }
+
+    // Fetch the project cwd from the state endpoint when the active session
+    // did not already provide one.
     const client = getApiClient();
     void client.getState().then((state) => {
       setCwd(state.cwd);
@@ -45,7 +53,7 @@ export function McpManagerDialog({ onClose }: Props) {
     }).catch(() => {
       setLoading(false);
     });
-  }, []);
+  }, [initialCwd]);
 
   const handleAdd = async () => {
     if (!cwd) return;

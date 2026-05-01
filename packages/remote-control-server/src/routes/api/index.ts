@@ -33,12 +33,16 @@ import {
 import { publishSessionEvent, loadPersistedEvents, getLastPersistedSeqNum, hydrateEventBusFromPersistence } from "../../services/transport";
 import { getEventBus } from "../../transport/event-bus";
 import { log, error as logError } from "../../logger";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { subprocessManager } from "../../services/subprocess-manager";
 import { resumeSession } from "../../services/session-resume";
 import { suggestFiles, suggestCommands } from "../../services/suggest/composerService";
 import { runWithSessionContext, getCurrentSessionContext } from "../../services/session-context";
 import { listActiveEnvironmentsResponse } from "../../services/environment";
+import {
+  resolveOwnedWebSessionRuntimeContext,
+  upsertSessionRuntimeState,
+} from "../../services/session-runtime-context";
 
 const app = new Hono();
 
@@ -95,6 +99,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return null;
   }
   return value as Record<string, unknown>;
+}
+
+function normalizeOptionalString(
+  value: unknown,
+): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function toEventTimestamp(event: { createdAt?: number }): string {
@@ -514,27 +528,108 @@ app.post("/sessions/:id/resume", uuidAuth, withSessionContext("id", async (c, se
 
 app.get("/state", uuidAuth, async (c) => {
   const uuid = c.get("uuid")!;
+  const requestedSessionId = c.req.query("sessionId");
   const sessions = listWebSessionsByOwnerUuid(uuid);
-  const active = sessions.find((s) => subprocessManager.isRunning(s.id));
-  const handle = active ? subprocessManager.get(active.id) : undefined;
+  const fallbackSessionId =
+    requestedSessionId ||
+    sessions.find((s) => subprocessManager.isRunning(s.id))?.id ||
+    sessions[0]?.id ||
+    null;
+
+  if (fallbackSessionId) {
+    const runtime = resolveOwnedWebSessionRuntimeContext(
+      fallbackSessionId,
+      uuid,
+    );
+    if (runtime.ok) {
+      const handle = subprocessManager.get(runtime.context.sessionId);
+      return c.json({
+        permissionMode:
+          handle?.permissionState.mode ??
+          runtime.context.effectivePermissionMode ??
+          "default",
+        approvedTools: handle?.permissionState.approvedTools ?? [],
+        pendingTools: [],
+        model:
+          runtime.context.sessionState?.model ?? "claude-sonnet-4-6",
+        tokenUsage:
+          handle?.tokenUsage ?? { inputTokens: 0, outputTokens: 0 },
+        cwd:
+          handle?.cwd ||
+          runtime.context.workspace?.workspacePath ||
+          runtime.context.workspace?.sourceRoot ||
+          process.cwd(),
+        gitBranch: runtime.context.workspace?.branch ?? null,
+        connected: Boolean(handle),
+        thinkingEffort: runtime.context.sessionState?.thinkingEffort ?? null,
+      });
+    }
+  }
 
   return c.json({
-    permissionMode: handle?.permissionState.mode ?? "default",
-    approvedTools: handle?.permissionState.approvedTools ?? [],
+    permissionMode: "default",
+    approvedTools: [],
     pendingTools: [],
     model: "claude-sonnet-4-6",
-    tokenUsage: handle?.tokenUsage ?? { inputTokens: 0, outputTokens: 0 },
-    cwd: handle?.cwd ?? process.cwd(),
+    tokenUsage: { inputTokens: 0, outputTokens: 0 },
+    cwd: process.cwd(),
     gitBranch: null,
-    connected: Boolean(handle),
+    connected: false,
+    thinkingEffort: null,
   });
 });
 
 app.patch("/state", uuidAuth, async (c) => {
+  const uuid = c.get("uuid")!;
   const body = await c.req.json().catch(() => ({}));
-  // Acknowledge state updates (model, permissionMode, thinkingEffort)
-  // These are stored client-side; the server just confirms receipt
-  return c.json({ success: true, ...(body as Record<string, unknown>) });
+  const requestedSessionId =
+    (body as Record<string, unknown>).sessionId as string | undefined ??
+    c.req.query("sessionId") ??
+    undefined;
+  const sessions = listWebSessionsByOwnerUuid(uuid);
+  const fallbackSessionId =
+    requestedSessionId ||
+    sessions.find((s) => subprocessManager.isRunning(s.id))?.id ||
+    sessions[0]?.id ||
+    null;
+
+  if (!fallbackSessionId) {
+    return c.json({ success: true });
+  }
+
+  const runtime = resolveOwnedWebSessionRuntimeContext(fallbackSessionId, uuid);
+  if (!runtime.ok) {
+    return c.json(
+      { error: runtime.error.message },
+      runtime.error.status,
+    );
+  }
+
+  const model = normalizeOptionalString((body as Record<string, unknown>).model);
+  const permissionMode = normalizeOptionalString(
+    (body as Record<string, unknown>).permissionMode,
+  );
+  const thinkingEffort = normalizeOptionalString(
+    (body as Record<string, unknown>).thinkingEffort,
+  );
+
+  const updated = upsertSessionRuntimeState(runtime.context.sessionId, {
+    ...(model !== undefined ? { model } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...(thinkingEffort !== undefined ? { thinkingEffort } : {}),
+  });
+
+  const handle = subprocessManager.get(runtime.context.sessionId);
+  if (handle && permissionMode !== undefined) {
+    handle.permissionState.mode = updated.permissionMode ?? "default";
+  }
+
+  return c.json({
+    success: true,
+    model: updated.model,
+    permissionMode: updated.permissionMode,
+    thinkingEffort: updated.thinkingEffort,
+  });
 });
 
 // ── Tools ────────────────────────────────────────────────────────────────────
@@ -1091,18 +1186,25 @@ app.get("/search", uuidAuth, async (c) => {
   const limit = Math.min(Number(c.req.query("limit") || "50"), 100);
   if (!query.trim()) return c.json({ results: [] });
 
-  const cwd = process.cwd();
+  const cwd = c.req.query("cwd") || process.cwd();
 
   const rgArgs = [
     "--json",
-    "--max-count", String(limit),
+    "--fixed-strings",
+    "--max-count",
+    "1",
     "--ignore-case",
     "--max-filesize", "1M",
-    "--glob", "!node_modules",
-    "--glob", "!.git",
-    "--glob", "!dist",
-    "--glob", "!.next",
+    "--glob",
+    "!**/node_modules/**",
+    "--glob",
+    "!**/.git/**",
+    "--glob",
+    "!**/dist/**",
+    "--glob",
+    "!**/.next/**",
     query,
+    ".",
   ];
 
   const results: Array<{
@@ -1115,39 +1217,33 @@ app.get("/search", uuidAuth, async (c) => {
   }> = [];
 
   try {
-    await new Promise<void>((resolve) => {
-      const proc = spawn("rg", rgArgs, { cwd, timeout: 5000 });
-      let buf = "";
-
-      proc.stdout.on("data", (chunk: Buffer) => {
-        buf += chunk.toString("utf-8");
-        const lines = buf.split("\n");
-        buf = lines.pop() || "";
-
-        for (const line of lines) {
-          if (results.length >= limit) break;
-          try {
-            const obj = JSON.parse(line);
-            if (obj.type === "match") {
-              const data = obj.data || {};
-              results.push({
-                file: data.path?.text ?? "",
-                line: data.line_number ?? 0,
-                col: (data.submatches?.[0]?.start ?? 0) + 1,
-                text: data.lines?.text ?? "",
-                matchStart: data.submatches?.[0]?.start ?? 0,
-                matchEnd: data.submatches?.[0]?.end ?? 0,
-              });
-            }
-          } catch {
-            // skip non-JSON lines
-          }
-        }
-      });
-
-      proc.on("close", () => resolve());
-      proc.on("error", () => resolve());
+    const proc = spawnSync("rg", rgArgs, {
+      cwd,
+      timeout: 2000,
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
     });
+
+    const stdout = typeof proc.stdout === "string" ? proc.stdout : "";
+    for (const line of stdout.split("\n")) {
+      if (results.length >= limit) break;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === "match") {
+          const data = obj.data || {};
+          results.push({
+            file: data.path?.text ?? "",
+            line: data.line_number ?? 0,
+            col: (data.submatches?.[0]?.start ?? 0) + 1,
+            text: data.lines?.text ?? "",
+            matchStart: data.submatches?.[0]?.start ?? 0,
+            matchEnd: data.submatches?.[0]?.end ?? 0,
+          });
+        }
+      } catch {
+        // skip non-JSON lines
+      }
+    }
   } catch {
     // rg not available or failed
   }
@@ -1251,7 +1347,7 @@ app.get("/memory", uuidAuth, async (c) => {
   try {
     const { readFileSync, existsSync, readdirSync } = await import("fs");
     const { join } = await import("path");
-    const cwd = process.cwd();
+    const cwd = c.req.query("cwd") || process.cwd();
 
     const files: Array<{ path: string; content: string }> = [];
 
@@ -1289,9 +1385,10 @@ app.get("/memory", uuidAuth, async (c) => {
 
 app.put("/memory", uuidAuth, async (c) => {
   const body = await c.req.json();
-  const { path: relativePath, content } = body as {
+  const { path: relativePath, content, cwd: rawCwd } = body as {
     path?: string;
     content?: string;
+    cwd?: string;
   };
 
   if (!relativePath || content === undefined) {
@@ -1308,7 +1405,7 @@ app.put("/memory", uuidAuth, async (c) => {
   try {
     const { writeFileSync, mkdirSync } = await import("fs");
     const { join, dirname } = await import("path");
-    const cwd = process.cwd();
+    const cwd = rawCwd || process.cwd();
     const fullPath = join(cwd, relativePath);
 
     mkdirSync(dirname(fullPath), { recursive: true });

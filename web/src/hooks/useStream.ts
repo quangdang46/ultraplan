@@ -109,6 +109,7 @@ export function useStream() {
   const toolInputBuffersRef = useRef<Map<string, string>>(new Map());
   const toolStartTimesRef = useRef<Map<string, number>>(new Map());
   const toolTimerRef = useRef<number | null>(null);
+  const serverEpochRef = useRef<number | null>(null);
   const lastSeqNumRef = useRef<number>(0);
   const processedSeqNumsRef = useRef<Set<number>>(new Set());
   const client = getApiClient();
@@ -339,6 +340,7 @@ export function useStream() {
           title: formatToolTitle(toolData.name, toolData.input),
           kind: toolData.name,
           status: 'running',
+          input: toolData.input,
           outputLines: [],
           liveOutput: '',
           liveErrorOutput: '',
@@ -394,7 +396,11 @@ export function useStream() {
           const title = parsedInput
             ? formatToolTitle(existingTool.kind, parsedInput)
             : `${existingTool.kind} - ${nextBuffer}`;
-          const updatedTool = { ...existingTool, title };
+          const updatedTool = {
+            ...existingTool,
+            title,
+            ...(parsedInput ? { input: parsedInput } : {}),
+          };
           activeTools.set(toolId, updatedTool);
 
           const messages = s.messages.map((message) => ({
@@ -808,6 +814,7 @@ export function useStream() {
     attachControllerRef.current?.abort();
     toolInputBuffersRef.current.clear();
     toolStartTimesRef.current.clear();
+    serverEpochRef.current = null;
     lastSeqNumRef.current = 0;
     processedSeqNumsRef.current.clear();
     stopToolTimer();
@@ -816,6 +823,7 @@ export function useStream() {
   const clearMessages = useCallback((sessionId: string | null = null) => {
     toolInputBuffersRef.current.clear();
     toolStartTimesRef.current.clear();
+    serverEpochRef.current = null;
     lastSeqNumRef.current = 0;
     processedSeqNumsRef.current.clear();
     stopToolTimer();
@@ -839,6 +847,7 @@ export function useStream() {
   ) => {
     toolInputBuffersRef.current.clear();
     toolStartTimesRef.current.clear();
+    serverEpochRef.current = null;
     lastSeqNumRef.current = 0;
     processedSeqNumsRef.current.clear();
     stopToolTimer();

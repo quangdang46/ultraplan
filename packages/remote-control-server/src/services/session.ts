@@ -5,6 +5,7 @@ import {
   storeIsSessionOwner,
   storeGetSessionOwners,
   storeBindSession,
+  storeGetWorkspaceBySession,
   storeUpdateSession,
   storeListSessions,
   storeListSessionsByUsername,
@@ -21,6 +22,8 @@ const WEB_SESSION_PREFIX = "session_";
 const CLOSED_SESSION_STATUSES = new Set(["archived", "inactive"]);
 
 function toResponse(row: { id: string; environmentId: string | null; title: string | null; status: string; source: string; permissionMode: string | null; workerEpoch: number; username: string | null; createdAt: Date; updatedAt: Date }): SessionResponse {
+  const workspace = storeGetWorkspaceBySession(row.id);
+
   return {
     id: row.id,
     environment_id: row.environmentId,
@@ -32,6 +35,7 @@ function toResponse(row: { id: string; environmentId: string | null; title: stri
     username: row.username,
     created_at: row.createdAt.getTime() / 1000,
     updated_at: row.updatedAt.getTime() / 1000,
+    cwd: workspace?.workspacePath || workspace?.sourceRoot || null,
   };
 }
 

@@ -72,6 +72,7 @@ export interface SessionResponse {
   username: string | null;
   created_at: number;
   updated_at: number;
+  cwd?: string | null;
   automation_state?: AutomationStateResponse;
 }
 

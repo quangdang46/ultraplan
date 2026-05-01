@@ -20,6 +20,7 @@ function buildToolItem(block: NonNullable<SessionMessage["blocks"]>[number]): To
     title: formatToolTitle(name, input),
     kind: name,
     status: "done",
+    input,
     outputLines: [],
   };
 }

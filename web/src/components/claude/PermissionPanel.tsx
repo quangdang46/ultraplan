@@ -1,6 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { Check, ShieldAlert, X, Terminal, FileEdit, FileText, Globe, Wrench } from "lucide-react";
 import type {
   AskUserQuestion,
@@ -467,6 +467,8 @@ function ExitPlanRequestCard({
   );
   const [editablePlan, setEditablePlan] = useState(originalPlan);
   const [feedback, setFeedback] = useState("");
+  const planDraftId = useId();
+  const revisionFeedbackId = useId();
   const trimmedPlan = editablePlan.trim();
   const wasEdited = editablePlan !== originalPlan;
 
@@ -503,10 +505,14 @@ function ExitPlanRequestCard({
             </div>
           )}
           <div className="mt-3">
-            <label className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]">
+            <label
+              htmlFor={planDraftId}
+              className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]"
+            >
               Plan draft
             </label>
             <textarea
+              id={planDraftId}
               value={editablePlan}
               onChange={(event) => setEditablePlan(event.target.value)}
               placeholder="Edit the plan before approving if needed..."
@@ -525,10 +531,14 @@ function ExitPlanRequestCard({
             </div>
           )}
           <div className="mt-3">
-            <label className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]">
+            <label
+              htmlFor={revisionFeedbackId}
+              className="text-xs font-semibold uppercase tracking-wide text-[#8f4f1a]"
+            >
               Revision feedback
             </label>
             <textarea
+              id={revisionFeedbackId}
               value={feedback}
               onChange={(event) => setFeedback(event.target.value)}
               placeholder="What should Claude change before trying the plan again?"
@@ -661,8 +671,7 @@ function renderRequest(request: PendingPermission, onRespond: Props["onRespond"]
   return (
     <GenericPermissionCard
       request={request}
-      onApprove={() => void onRespond(request.requestId, true)}
-      onReject={() => void onRespond(request.requestId, false)}
+      onRespond={onRespond}
     />
   );
 }

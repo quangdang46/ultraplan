@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { X, CheckCircle2, XCircle, Loader2, Stethoscope, RefreshCw } from "lucide-react";
 import { getApiClient } from "../../api/client";
 
@@ -10,7 +10,7 @@ interface Check {
   status: CheckStatus;
 }
 
-function useChecks() {
+function useChecks(cwd?: string | null, sessionId?: string | null) {
   const [checks, setChecks] = useState<Check[]>([
     { name: "API reachable", detail: "", status: "pending" },
     { name: "Authentication", detail: "", status: "pending" },
@@ -20,15 +20,16 @@ function useChecks() {
     { name: "Memory files", detail: "", status: "pending" },
   ]);
 
-  const update = (name: string, status: CheckStatus, detail: string) => {
+  const update = useCallback((name: string, status: CheckStatus, detail: string) => {
     setChecks((prev) =>
       prev.map((c) => (c.name === name ? { ...c, status, detail } : c))
     );
-  };
+  }, []);
 
-  const run = async () => {
+  const run = useCallback(async () => {
     setChecks((prev) => prev.map((c) => ({ ...c, status: "pending", detail: "" })));
     const client = getApiClient();
+    let resolvedCwd = cwd ?? null;
 
     // 1. API reachable
     try {
@@ -52,7 +53,8 @@ function useChecks() {
 
     // 3. Session state
     try {
-      const state = await client.getState();
+      const state = await client.getState(sessionId ?? undefined);
+      resolvedCwd = resolvedCwd ?? state.cwd;
       update("Session state", "ok", `model: ${state.model ?? "unknown"}, cwd: ${state.cwd ?? "?"}`);
     } catch {
       update("Session state", "error", "Could not load state");
@@ -69,7 +71,7 @@ function useChecks() {
 
     // 5. MCP servers
     try {
-      const mcp = await client.getMcpServers();
+      const mcp = await client.getMcpServers(resolvedCwd ?? undefined);
       const count = mcp.servers.length;
       update("MCP servers", "ok", count === 0 ? "No servers configured" : `${count} server(s) configured`);
     } catch {
@@ -78,23 +80,31 @@ function useChecks() {
 
     // 6. Memory files
     try {
-      const mem = await client.getMemoryFiles();
+      const mem = await client.getMemoryFiles(resolvedCwd ?? undefined);
       const count = mem.files.length;
       update("Memory files", "ok", count === 0 ? "No CLAUDE.md files found" : `${count} file(s) found`);
     } catch {
       update("Memory files", "error", "Could not load memory files");
     }
-  };
+  }, [cwd, sessionId, update]);
 
   return { checks, run };
 }
 
-export function DiagnosticsDialog({ onClose }: { onClose: () => void }) {
-  const { checks, run } = useChecks();
+export function DiagnosticsDialog({
+  cwd,
+  sessionId,
+  onClose,
+}: {
+  cwd?: string | null;
+  sessionId?: string | null;
+  onClose: () => void;
+}) {
+  const { checks, run } = useChecks(cwd, sessionId);
 
   useEffect(() => {
     void run();
-  }, []);
+  }, [run]);
 
   const allDone = checks.every((c) => c.status !== "pending");
   const hasError = checks.some((c) => c.status === "error");

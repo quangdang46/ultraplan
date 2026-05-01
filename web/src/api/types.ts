@@ -51,6 +51,7 @@ export interface StateResponse {
   approvedTools: string[];
   pendingTools: unknown[];
   model: string;
+  thinkingEffort?: string | null;
   tokenUsage: {
     inputTokens: number;
     outputTokens: number;

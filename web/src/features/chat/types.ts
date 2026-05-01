@@ -18,6 +18,7 @@ export type ToolItem = {
   title: string;
   kind: string;
   status: 'done' | 'running' | 'failed';
+  input?: Record<string, unknown>;
   output?: string;
   stderr?: string;
   cwdWarning?: string;
@@ -68,5 +69,5 @@ export interface StreamState {
   pendingPermissions: PendingPermission[];
   error: string | null;
   pendingRouteSync: boolean;
-  connectionState?: 'connected' | 'reconnecting' | 'restarted' | 'interrupted' | 'failed';
+  connectionState: 'connected' | 'reconnecting' | 'restarted' | 'interrupted' | 'failed';
 }

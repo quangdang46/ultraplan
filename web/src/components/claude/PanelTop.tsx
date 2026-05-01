@@ -9,6 +9,7 @@ import { ExportDialog } from "./ExportDialog";
 
 type Props = {
   title: string;
+  sessionId?: string | null;
   status?: string | null;
   lastMessageAt?: string | null;
   connectionState?: 'connected' | 'reconnecting' | 'restarted' | 'interrupted' | 'failed';
@@ -83,6 +84,7 @@ function getStatusDotClass(status?: string | null, connectionState?: Props['conn
 
 export const PanelTop = ({
   title,
+  sessionId,
   status,
   lastMessageAt,
   connectionState,
@@ -113,7 +115,7 @@ export const PanelTop = ({
     const loadState = async () => {
       try {
         await ensureApiAuthenticated(client);
-        const state = await client.getState();
+        const state = await client.getState(sessionId ?? undefined);
         if (!cancelled) {
           setTokens({
             input: state.tokenUsage?.inputTokens ?? 0,
@@ -145,7 +147,7 @@ export const PanelTop = ({
       void loadUsage();
     }, 10000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  }, [sessionId]);
 
   const IconButton = ({
     onClick,

@@ -1,6 +1,14 @@
 import type { ContentBlock, ReplyQuote } from './chat'
 
-export type SessionStatus = 'active' | 'archived' | 'error'
+export type SessionStatus =
+  | 'active'
+  | 'archived'
+  | 'error'
+  | 'idle'
+  | 'inactive'
+  | 'interrupted'
+  | 'requires_action'
+  | 'running'
 
 export interface SessionMessage {
   role: 'user' | 'assistant' | 'system'
