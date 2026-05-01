@@ -111,6 +111,19 @@ describe("session-resume", () => {
       expect(context!.sessionState).not.toBeNull();
       expect(context!.sessionState!.model).toBe("claude-opus-4-5");
     });
+
+    test("does not rematerialize same-dir workspaces with a persisted cwd", async () => {
+      const workspacePath = join(tempRoot, "same-dir-workspace");
+      await mkdir(workspacePath, { recursive: true });
+
+      const session = storeCreateSession({ cwd: workspacePath });
+      const context = await getResumeContext(session.id);
+
+      expect(context).not.toBeNull();
+      expect(context!.workspace.strategy).toBe("same-dir");
+      expect(context!.workspacePath).toBe(workspacePath);
+      expect(context!.materializationNeeded).toBe(false);
+    });
   });
 
   describe("resumeSession", () => {

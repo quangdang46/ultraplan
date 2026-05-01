@@ -20,12 +20,22 @@ import {
   archiveSession,
   resolveExistingWebSessionId,
 } from "../../services/session";
-import { storeBindSession, storeClearSessionRequiresAction, storeCreateUser, storeGetSessionWorker, storeListPendingPermissions, storeRemovePendingPermission, storeListSessionsByOwnerUuid } from "../../store";
+import {
+  storeBindSession,
+  storeClearSessionRequiresAction,
+  storeCreateUser,
+  storeGetSessionWorker,
+  storeGetWorkspaceBySession,
+  storeListPendingPermissions,
+  storeRemovePendingPermission,
+  storeListSessionsByOwnerUuid,
+} from "../../store";
 import { publishSessionEvent, loadPersistedEvents, getLastPersistedSeqNum, hydrateEventBusFromPersistence } from "../../services/transport";
 import { getEventBus } from "../../transport/event-bus";
 import { log, error as logError } from "../../logger";
 import { spawn } from "child_process";
 import { subprocessManager } from "../../services/subprocess-manager";
+import { resumeSession } from "../../services/session-resume";
 import { suggestFiles, suggestCommands } from "../../services/suggest/composerService";
 import { runWithSessionContext, getCurrentSessionContext } from "../../services/session-context";
 import { listActiveEnvironmentsResponse } from "../../services/environment";
@@ -49,6 +59,291 @@ function withSessionContext(
     }
     return runWithSessionContext(sessionId, uuid, () => handler(c, sessionId, uuid));
   };
+}
+
+type SessionHistoryBlock = {
+  type: string;
+  text?: string;
+  thinking?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  content?: unknown;
+  tool_use_id?: string;
+  is_error?: boolean;
+  summary?: string;
+  title?: string;
+  url?: string;
+  mimeType?: string;
+  sourceType?: string;
+};
+
+type SessionHistoryMessage = {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+  blocks?: SessionHistoryBlock[];
+  quote?: {
+    text: string;
+    sourceMessageId?: string;
+    sourceRole?: "user" | "assistant";
+  };
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function toEventTimestamp(event: { createdAt?: number }): string {
+  return new Date(event.createdAt ?? Date.now()).toISOString();
+}
+
+function extractQuote(value: unknown): SessionHistoryMessage["quote"] | undefined {
+  const record = asRecord(value);
+  if (!record || typeof record.text !== "string" || record.text.length === 0) {
+    return undefined;
+  }
+
+  return {
+    text: record.text,
+    ...(typeof record.sourceMessageId === "string"
+      ? { sourceMessageId: record.sourceMessageId }
+      : {}),
+    ...(record.sourceRole === "user" || record.sourceRole === "assistant"
+      ? { sourceRole: record.sourceRole }
+      : {}),
+  };
+}
+
+function collectSessionEvents(sessionId: string) {
+  const persisted = loadPersistedEvents(sessionId, 0).map((event) => ({
+    ...event,
+    direction: event.direction as "inbound" | "outbound",
+  }));
+  const live = getEventBus(sessionId, getLastPersistedSeqNum(sessionId))
+    .getEventsSince(0)
+    .map((event) => ({
+      ...event,
+      direction: event.direction as "inbound" | "outbound",
+    }));
+
+  const seenSeqNums = new Set<number>();
+  return [...persisted, ...live]
+    .filter((event) => {
+      if (seenSeqNums.has(event.seqNum)) {
+        return false;
+      }
+      seenSeqNums.add(event.seqNum);
+      return true;
+    })
+    .sort((a, b) => a.seqNum - b.seqNum);
+}
+
+export function buildSessionMessagesFromEvents(
+  events: Array<{
+    type: string;
+    payload: unknown;
+    seqNum: number;
+    createdAt: number;
+  }>,
+): SessionHistoryMessage[] {
+  const messages: SessionHistoryMessage[] = [];
+  let assistantDraft:
+    | { role: "assistant"; content: string; timestamp: string; blocks: SessionHistoryBlock[] }
+    | null = null;
+
+  const flushAssistantDraft = () => {
+    if (!assistantDraft) return;
+    if (!assistantDraft.content && assistantDraft.blocks.length === 0) {
+      assistantDraft = null;
+      return;
+    }
+
+    messages.push({
+      role: "assistant",
+      content: assistantDraft.content,
+      timestamp: assistantDraft.timestamp,
+      ...(assistantDraft.blocks.length > 0 ? { blocks: assistantDraft.blocks } : {}),
+    });
+    assistantDraft = null;
+  };
+
+  const ensureAssistantDraft = (timestamp: string) => {
+    if (!assistantDraft) {
+      assistantDraft = {
+        role: "assistant",
+        content: "",
+        timestamp,
+        blocks: [],
+      };
+    }
+    return assistantDraft;
+  };
+
+  for (const event of events) {
+    const payload = asRecord(event.payload);
+    const timestamp = toEventTimestamp(event);
+
+    switch (event.type) {
+      case "user":
+      case "user_message": {
+        flushAssistantDraft();
+        const content =
+          typeof payload?.content === "string"
+            ? payload.content
+            : typeof payload?.message === "string"
+              ? payload.message
+              : "";
+        const quote = extractQuote(payload?.quote);
+        if (!content && !quote) {
+          break;
+        }
+        messages.push({
+          role: "user",
+          content,
+          timestamp,
+          ...(quote ? { quote } : {}),
+        });
+        break;
+      }
+      case "content_delta": {
+        const delta = asRecord(payload?.delta);
+        const text =
+          typeof delta?.text === "string"
+            ? delta.text
+            : typeof payload?.content === "string"
+              ? payload.content
+              : "";
+        if (!text) {
+          break;
+        }
+        const assistant = ensureAssistantDraft(timestamp);
+        assistant.content += text;
+        assistant.blocks.push({ type: "text", text });
+        break;
+      }
+      case "thinking_delta": {
+        const delta = asRecord(payload?.delta);
+        const thinking =
+          typeof delta?.thinking === "string"
+            ? delta.thinking
+            : typeof payload?.content === "string"
+              ? payload.content
+              : "";
+        if (!thinking) {
+          break;
+        }
+        ensureAssistantDraft(timestamp).blocks.push({ type: "thinking", thinking });
+        break;
+      }
+      case "tool_start": {
+        const toolId =
+          typeof payload?.id === "string"
+            ? payload.id
+            : typeof payload?.toolCallId === "string"
+              ? payload.toolCallId
+              : "";
+        ensureAssistantDraft(timestamp).blocks.push({
+          type: "tool_use",
+          ...(toolId ? { id: toolId } : {}),
+          ...(typeof payload?.name === "string" ? { name: payload.name } : {}),
+          ...(payload?.input && typeof payload.input === "object"
+            ? { input: payload.input as Record<string, unknown> }
+            : {}),
+        });
+        break;
+      }
+      case "tool_result": {
+        flushAssistantDraft();
+        const toolUseId =
+          typeof payload?.toolCallId === "string"
+            ? payload.toolCallId
+            : typeof payload?.id === "string"
+              ? payload.id
+              : "";
+        messages.push({
+          role: "user",
+          content: "",
+          timestamp,
+          blocks: [
+            {
+              type: "tool_result",
+              ...(toolUseId ? { tool_use_id: toolUseId } : {}),
+              content: payload?.result ?? payload?.content ?? "",
+              is_error:
+                Boolean(payload?.isError) ||
+                Boolean(payload?.is_error) ||
+                Number(payload?.exitCode ?? 0) !== 0,
+            },
+          ],
+        });
+        break;
+      }
+      case "content_block": {
+        const block = asRecord(payload?.block);
+        if (!block || typeof block.type !== "string") {
+          break;
+        }
+        if (block.type === "tool_result") {
+          flushAssistantDraft();
+          messages.push({
+            role: "user",
+            content: "",
+            timestamp,
+            blocks: [
+              {
+                type: "tool_result",
+                ...(typeof block.tool_use_id === "string"
+                  ? { tool_use_id: block.tool_use_id }
+                  : {}),
+                content: block.content ?? block.text ?? "",
+                is_error: Boolean(block.is_error),
+              },
+            ],
+          });
+          break;
+        }
+
+        const assistant = ensureAssistantDraft(timestamp);
+        assistant.blocks.push({
+          type: block.type,
+          ...(typeof block.text === "string" ? { text: block.text } : {}),
+          ...(typeof block.thinking === "string" ? { thinking: block.thinking } : {}),
+          ...(typeof block.id === "string" ? { id: block.id } : {}),
+          ...(typeof block.name === "string" ? { name: block.name } : {}),
+          ...(block.input && typeof block.input === "object"
+            ? { input: block.input as Record<string, unknown> }
+            : {}),
+          ...("content" in block ? { content: block.content } : {}),
+          ...(typeof block.tool_use_id === "string"
+            ? { tool_use_id: block.tool_use_id }
+            : {}),
+          ...(typeof block.summary === "string" ? { summary: block.summary } : {}),
+          ...(typeof block.title === "string" ? { title: block.title } : {}),
+          ...(typeof block.url === "string" ? { url: block.url } : {}),
+          ...(typeof block.mimeType === "string" ? { mimeType: block.mimeType } : {}),
+          ...(typeof block.sourceType === "string"
+            ? { sourceType: block.sourceType }
+            : {}),
+        });
+        if (block.type === "text" && typeof block.text === "string") {
+          assistant.content += block.text;
+        }
+        break;
+      }
+      case "message_end":
+        flushAssistantDraft();
+        break;
+      default:
+        break;
+    }
+  }
+
+  flushAssistantDraft();
+  return messages;
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
@@ -194,10 +489,22 @@ app.post("/sessions/:id/resume", uuidAuth, withSessionContext("id", async (c, se
   }
 
   try {
-    updateSessionStatus(sessionId, "idle");
-    await subprocessManager.getOrSpawn(sessionId, process.cwd());
+    const resumed = await resumeSession(sessionId);
+    if (!resumed.success) {
+      updateSessionStatus(sessionId, "interrupted");
+      return c.json({ error: resumed.error ?? "Failed to resume session" }, 500);
+    }
+
+    const workspace = storeGetWorkspaceBySession(sessionId);
+    const resumeCwd =
+      resumed.workspacePath ||
+      workspace?.workspacePath ||
+      workspace?.sourceRoot ||
+      process.cwd();
+    await subprocessManager.getOrSpawn(sessionId, resumeCwd, true);
     return c.json({ success: true, status: "resumed" });
   } catch (err) {
+    updateSessionStatus(sessionId, "interrupted");
     logError("Failed to resume session", String(err));
     return c.json({ error: `Failed to resume: ${String(err)}` }, 500);
   }
@@ -270,12 +577,21 @@ app.post("/chat/stream", uuidAuth, async (c) => {
     resolvedId = resolveOwnedWebSessionId(rawSessionId, uuid) ?? undefined;
     if (!resolvedId) return c.json({ error: "Session not found or not owned" }, 403);
   } else {
-    const session = createSession({ title: "New Session", source: "web" });
+    const session = createSession({
+      title: "New Session",
+      source: "web",
+      cwd: rawCwd ?? null,
+    });
     storeBindSession(session.id, uuid);
     resolvedId = session.id;
   }
 
-  const effectiveCwd = rawCwd || process.cwd();
+  const workspace = storeGetWorkspaceBySession(resolvedId);
+  const effectiveCwd =
+    rawCwd ||
+    workspace?.workspacePath ||
+    workspace?.sourceRoot ||
+    process.cwd();
 
   // Run the streaming handler with session context isolation
   return runWithSessionContext(resolvedId, uuid, async () => {
@@ -417,36 +733,7 @@ app.post("/chat/interrupt", uuidAuth, async (c) => {
 // ── Session messages ─────────────────────────────────────────────────────────
 
 app.get("/sessions/:id/messages", uuidAuth, withSessionContext("id", (c, sessionId) => {
-  // Try in-memory bus first, fall back to persisted events
-  const bus = getEventBus(sessionId, getLastPersistedSeqNum(sessionId));
-  let events = bus.getEventsSince(0);
-  if (events.length === 0) {
-    events = loadPersistedEvents(sessionId, 0).map((e) => ({
-      ...e,
-      direction: e.direction as "inbound" | "outbound",
-    }));
-  }
-
-  const messages: Array<{
-    id: string;
-    role: string;
-    content: string;
-    timestamp: string;
-  }> = [];
-
-  for (const event of events) {
-    const payload = event.payload as Record<string, unknown> | null;
-    if (event.type === "user" || event.type === "user_message") {
-      messages.push({
-        id: event.id,
-        role: "user",
-        content: String(payload?.content ?? payload?.message ?? ""),
-        timestamp: new Date(event.createdAt ?? Date.now()).toISOString(),
-      });
-    }
-  }
-
-  return c.json({ messages });
+  return c.json({ messages: buildSessionMessagesFromEvents(collectSessionEvents(sessionId)) });
 }));
 
 // ── Session stream (SSE with normalized { type, data } shape) ────────────────
@@ -479,29 +766,57 @@ app.get("/sessions/:id/stream", uuidAuth, withSessionContext("id", (c, sessionId
 
       // Replay pending permissions from pending_permissions table
       const pendingPermissions = storeListPendingPermissions(sessionId);
-      const persistedRequestIds = new Set(
-        persisted
-          .filter((e) => e.type === "permission_request")
-          .map((e) => (e.payload as Record<string, unknown>)?.request_id as string)
+      const replayedRequestIds = new Set(
+        [...persisted, ...missed]
+          .filter((event) => event.type === "permission_request")
+          .map((event) => (event.payload as Record<string, unknown>)?.request_id as string)
           .filter(Boolean),
       );
       for (const perm of pendingPermissions) {
-        if (!persistedRequestIds.has(perm.requestId)) {
-          const data = JSON.stringify({ type: "permission_request", data: perm.payload });
-          controller.enqueue(encoder.encode(`event: message\ndata: ${data}\n\n`));
+        if (!replayedRequestIds.has(perm.requestId)) {
+          const replayEvent = publishSessionEvent(
+            sessionId,
+            "permission_request",
+            perm.payload,
+            "outbound",
+          );
+          replayedRequestIds.add(perm.requestId);
+          const data = JSON.stringify({ type: replayEvent.type, data: replayEvent.payload });
+          controller.enqueue(
+            encoder.encode(
+              `id: ${replayEvent.seqNum}\nevent: message\ndata: ${data}\n\n`,
+            ),
+          );
         }
       }
 
       // Fallback: also check requiresActionDetails for backward compat
       const worker = storeGetSessionWorker(sessionId);
       const pendingPermission = worker?.requiresActionDetails;
+      const pendingRequestId =
+        pendingPermission && typeof pendingPermission === "object"
+          ? (pendingPermission as Record<string, unknown>).request_id
+          : null;
       if (
         pendingPermission &&
         typeof pendingPermission === "object" &&
-        !persisted.some((event) => event.type === "permission_request" && JSON.stringify(event.payload) === JSON.stringify(pendingPermission))
+        (typeof pendingRequestId !== "string" || !replayedRequestIds.has(pendingRequestId))
       ) {
-        const data = JSON.stringify({ type: "permission_request", data: pendingPermission });
-        controller.enqueue(encoder.encode(`event: message\ndata: ${data}\n\n`));
+        const replayEvent = publishSessionEvent(
+          sessionId,
+          "permission_request",
+          pendingPermission,
+          "outbound",
+        );
+        if (typeof pendingRequestId === "string" && pendingRequestId.length > 0) {
+          replayedRequestIds.add(pendingRequestId);
+        }
+        const data = JSON.stringify({ type: replayEvent.type, data: replayEvent.payload });
+        controller.enqueue(
+          encoder.encode(
+            `id: ${replayEvent.seqNum}\nevent: message\ndata: ${data}\n\n`,
+          ),
+        );
       }
 
       const unsub = bus.subscribe((event) => {

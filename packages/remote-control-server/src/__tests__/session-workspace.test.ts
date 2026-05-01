@@ -9,7 +9,7 @@ describe("bd-3fg.2.1.1: session-workspace binding", () => {
     storeReset();
   });
 
-  test("createSession with cwd materializes workspace path", () => {
+  test("createSession with cwd binds a same-dir workspace path", () => {
     const session = storeCreateSession({
       title: "Test Session",
       source: "web",
@@ -20,7 +20,8 @@ describe("bd-3fg.2.1.1: session-workspace binding", () => {
 
     const workspace = getOrCreateWorkspaceForSession(session.id);
     expect(workspace.workspacePath).toBe("/tmp/test-workspace");
-    expect(workspace.strategy).toBe("materialized");
+    expect(workspace.strategy).toBe("same-dir");
+    expect(workspace.sourceRoot).toBe("/tmp/test-workspace");
   });
 
   test("createSession without cwd leaves workspace path empty", () => {
@@ -60,9 +61,13 @@ describe("bd-3fg.2.1.1: session-workspace binding", () => {
     });
 
     const retrieved = storeGetSession(session.id);
-    expect(retrieved?.workspaceId).toBeDefined();
+    const workspaceId = retrieved?.workspaceId;
+    expect(workspaceId).toBeDefined();
+    if (!workspaceId) {
+      throw new Error("workspaceId should be defined");
+    }
 
     const workspace = getOrCreateWorkspaceForSession(session.id);
-    expect(workspace.id).toBe(retrieved?.workspaceId);
+    expect(workspace.id).toBe(workspaceId);
   });
 });

@@ -143,7 +143,7 @@ export function flushBufferedEvents(workerId: string): number {
  */
 export function subscribeToWorkerEvents(
   workerId: string,
-  callback: (event: Parameters<ReturnType<typeof getEventBus>["subscribe"]>[0]) => void,
+  callback: (event: import("../transport/event-bus").CanonicalSessionEvent) => void,
 ): () => void {
   const bus = getEventBus(workerId);
   return bus.subscribe(callback);

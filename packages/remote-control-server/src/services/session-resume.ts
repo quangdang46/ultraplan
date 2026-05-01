@@ -54,17 +54,24 @@ export async function getResumeContext(
   let materializationNeeded = false;
   let materializationStrategy: "git_worktree" | "copy" | "temp_clone" = "copy";
 
-  if (workspace.materializationStrategy) {
-    materializationStrategy = workspace.materializationStrategy;
+  const derivedMaterializationStrategy =
+    workspace.materializationStrategy ??
+    (workspace.strategy === "worktree"
+      ? "git_worktree"
+      : workspace.strategy === "copy"
+        ? "copy"
+        : workspace.strategy === "temp-clone"
+          ? "temp_clone"
+          : null);
+
+  if (derivedMaterializationStrategy) {
+    materializationStrategy = derivedMaterializationStrategy;
     if (workspace.workspacePath) {
       const pathExists = await exists(workspace.workspacePath).catch(() => false);
       materializationNeeded = !pathExists;
     } else {
       materializationNeeded = true;
     }
-  } else if (!workspace.materializationStrategy) {
-    materializationNeeded = true;
-    materializationStrategy = "copy";
   }
 
   log(

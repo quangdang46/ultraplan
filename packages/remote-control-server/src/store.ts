@@ -319,13 +319,21 @@ export function storeCreateSession(req: {
   );
   const session = rowToSession(db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as Record<string, unknown>);
   const workspaceId = `workspace_${randomUUID().replace(/-/g, "")}`;
-  const strategy = req.cwd ? "materialized" : "same-dir";
+  const strategy: WorkspaceStrategy = "same-dir";
   const workspacePath = req.cwd ?? "";
+  const sourceRoot = req.cwd ?? "";
   db.prepare(`
     INSERT INTO workspaces (id, session_id, environment_id, source_root, strategy, workspace_path, cleanup_policy, created_at, updated_at)
-    VALUES (?, ?, ?, '', ?, ?, 'keep', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, 'keep', ?, ?)
   `).run(
-    workspaceId, id, req.environmentId ?? null, strategy, workspacePath, now, now,
+    workspaceId,
+    id,
+    req.environmentId ?? null,
+    sourceRoot,
+    strategy,
+    workspacePath,
+    now,
+    now,
   );
   db.prepare(`UPDATE sessions SET workspace_id = ? WHERE id = ?`).run(workspaceId, id);
   return rowToSession(db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as Record<string, unknown>);
@@ -601,6 +609,19 @@ export function storeUpsertSessionWorker(
 ): SessionWorkerRecord {
   const now = new Date().toISOString();
   const existing = storeGetSessionWorker(sessionId);
+  const session = storeGetSession(sessionId);
+
+  if (!session && !existing) {
+    return {
+      sessionId,
+      workerStatus: patch.workerStatus ?? null,
+      externalMetadata: patch.externalMetadata ?? null,
+      requiresActionDetails: patch.requiresActionDetails ?? null,
+      lastHeartbeatAt: patch.lastHeartbeatAt ?? null,
+      createdAt: new Date(now),
+      updatedAt: new Date(now),
+    };
+  }
 
   if (!existing) {
     db.prepare(`
@@ -812,6 +833,7 @@ export function storeClearPendingPermissions(sessionId: string): void {
 
 export function storeReset() {
   db.exec(`
+    DELETE FROM workspace_repo_membership;
     DELETE FROM events;
     DELETE FROM pending_permissions;
     DELETE FROM session_owners;

@@ -14,7 +14,7 @@ import {
 } from "../../services/session";
 import { storeBindSession, storeGetSessionWorker } from "../../store";
 import { createWorkItem } from "../../services/work-dispatch";
-import { createSSEStream } from "../../transport/sse-writer";
+import { createSSEStream, resolveReplayCursor } from "../../transport/sse-writer";
 import { getEventBus } from "../../transport/event-bus";
 
 const app = new Hono();
@@ -126,8 +126,7 @@ app.get("/sessions/:id/events", uuidAuth, async (c) => {
     return c.json({ error: { type: "session_closed", message: `Session is ${session.status}` } }, 409);
   }
 
-  const lastEventId = c.req.header("Last-Event-ID");
-  const fromSeqNum = lastEventId ? parseInt(lastEventId) : 0;
+  const fromSeqNum = resolveReplayCursor(new URL(c.req.url).searchParams, c.req.raw.headers);
   return createSSEStream(c, sessionId, fromSeqNum);
 });
 

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { sessionIngressAuth, acceptCliHeaders } from "../../auth/middleware";
-import { createWorkerEventStream } from "../../transport/sse-writer";
+import { createWorkerEventStream, resolveReplayCursor } from "../../transport/sse-writer";
 import { getSession } from "../../services/session";
 
 const app = new Hono();
@@ -14,10 +14,7 @@ app.get("/:id/worker/events/stream", acceptCliHeaders, sessionIngressAuth, async
   }
 
   // Support Last-Event-ID / from_sequence_num for reconnection
-  const lastEventId = c.req.header("Last-Event-ID");
-  const fromSeq = c.req.query("from_sequence_num");
-  const fromSeqNum = fromSeq ? parseInt(fromSeq) : lastEventId ? parseInt(lastEventId) : 0;
-
+const fromSeqNum = resolveReplayCursor(new URL(c.req.url).searchParams, c.req.raw.headers);
   return createWorkerEventStream(c, sessionId, fromSeqNum);
 });
 

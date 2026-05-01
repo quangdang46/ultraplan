@@ -905,9 +905,35 @@ class SubprocessHandleImpl implements SubprocessHandle {
 // inherits the same runtime. Falls back to the CLI entrypoint path.
 // ---------------------------------------------------------------------------
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HEX_SESSION_PATTERN =
+  /^(?:session_|cse_)?([0-9a-f]{32})$/i;
+
+export function toCliSessionId(sessionId: string): string {
+  if (UUID_PATTERN.test(sessionId)) {
+    return sessionId.toLowerCase();
+  }
+
+  const match = HEX_SESSION_PATTERN.exec(sessionId);
+  if (!match) {
+    throw new Error(`Unsupported session ID format: ${sessionId}`);
+  }
+
+  const hex = match[1]!.toLowerCase();
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
+}
+
 function spawnSubprocess(sessionId: string, cwd: string, resume: boolean): ChildProcess {
   // Re-exec the same bun binary with the CLI entrypoint
   const execPath = process.execPath; // e.g. /usr/local/bin/bun
+  const cliSessionId = toCliSessionId(sessionId);
 
   // The CLI entrypoint relative to project root
   // Walk up from __dirname (packages/remote-control-server/src/services/) to root
@@ -924,7 +950,7 @@ function spawnSubprocess(sessionId: string, cwd: string, resume: boolean): Child
     "--print",
     "--verbose",
     "--include-partial-messages",
-    ...(resume ? ["--resume", sessionId] : ["--session-id", sessionId]),
+    ...(resume ? ["--resume", cliSessionId] : ["--session-id", cliSessionId]),
     "--input-format", "stream-json",
     "--output-format", "stream-json",
   ];

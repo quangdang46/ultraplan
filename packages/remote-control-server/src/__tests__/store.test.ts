@@ -24,6 +24,8 @@ import {
   storeUpsertWorkspace,
   storeGetSessionState,
   storeUpsertSessionState,
+  storeGetSessionWorker,
+  storeUpsertSessionWorker,
   storeBindSession,
   storeIsSessionOwner,
   storeListSessionsByOwnerUuid,
@@ -406,6 +408,31 @@ describe("store", () => {
 
       expect(storeDeleteSession(session.id)).toBe(true);
       expect(storeGetSessionState(session.id)).toBeUndefined();
+    });
+  });
+
+  describe("storeUpsertSessionWorker / storeGetSessionWorker", () => {
+    test("creates durable worker state for an existing session", () => {
+      const session = storeCreateSession({});
+      const worker = storeUpsertSessionWorker(session.id, {
+        workerStatus: "running",
+        externalMetadata: { permission_mode: "default" },
+      });
+
+      expect(worker.sessionId).toBe(session.id);
+      expect(worker.workerStatus).toBe("running");
+      expect(worker.externalMetadata).toEqual({ permission_mode: "default" });
+      expect(storeGetSessionWorker(session.id)).toEqual(worker);
+    });
+
+    test("skips inserts when the session no longer exists", () => {
+      const worker = storeUpsertSessionWorker("missing-session", {
+        workerStatus: "interrupted",
+      });
+
+      expect(worker.sessionId).toBe("missing-session");
+      expect(worker.workerStatus).toBe("interrupted");
+      expect(storeGetSessionWorker("missing-session")).toBeUndefined();
     });
   });
 
