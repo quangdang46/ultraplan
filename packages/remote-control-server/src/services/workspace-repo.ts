@@ -18,6 +18,14 @@ import { db } from "../db";
 
 export type { WorkspaceRecord, EnvironmentRecord };
 
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0;
+}
+
+function looksLikeUUID(v: unknown): boolean {
+  return typeof v === "string" && v.length === 36 && v.includes("-");
+}
+
 // ---------- Workspace environment ----------
 
 /**
@@ -25,6 +33,10 @@ export type { WorkspaceRecord, EnvironmentRecord };
  * Returns null if workspace doesn't exist or has no environment_id.
  */
 export function getWorkspaceEnvironment(workspaceId: string): EnvironmentRecord | null {
+  if (!isNonEmptyString(workspaceId)) {
+    log(`[workspace-repo] getWorkspaceEnvironment: invalid workspaceId`);
+    return null;
+  }
   log(`[workspace-repo] getWorkspaceEnvironment workspaceId=${workspaceId}`);
   const workspace = storeGetWorkspace(workspaceId);
   if (!workspace || !workspace.environmentId) {
@@ -51,6 +63,10 @@ export function getOrCreateWorkspaceForSession(
   sessionId: string,
   envId?: string | null,
 ): WorkspaceRecord {
+  if (!isNonEmptyString(sessionId)) {
+    log(`[workspace-repo] getOrCreateWorkspaceForSession: invalid sessionId`);
+    throw new Error(`Invalid sessionId: must be a non-empty string`);
+  }
   log(`[workspace-repo] getOrCreateWorkspaceForSession sessionId=${sessionId} envId=${envId ?? "undefined"}`);
 
   const existing = storeGetWorkspaceBySession(sessionId);
@@ -84,6 +100,10 @@ export function getOrCreateWorkspaceForSession(
  * Returns an empty array if the environment doesn't exist or has no workspaces.
  */
 export function listWorkspacesForEnvironment(environmentId: string): WorkspaceRecord[] {
+  if (!isNonEmptyString(environmentId)) {
+    log(`[workspace-repo] listWorkspacesForEnvironment: invalid environmentId`);
+    return [];
+  }
   log(`[workspace-repo] listWorkspacesForEnvironment environmentId=${environmentId}`);
   // Use direct SQL for efficiency — workspace has environment_id FK index
   const rows = db
@@ -117,6 +137,10 @@ export function listWorkspacesForEnvironment(environmentId: string): WorkspaceRe
  * Returns null if workspace doesn't exist or has no workspace_path set.
  */
 export function resolveWorkspacePath(workspaceId: string): string | null {
+  if (!isNonEmptyString(workspaceId)) {
+    log(`[workspace-repo] resolveWorkspacePath: invalid workspaceId`);
+    return null;
+  }
   log(`[workspace-repo] resolveWorkspacePath workspaceId=${workspaceId}`);
   const workspace = storeGetWorkspace(workspaceId);
   if (!workspace || !workspace.workspacePath) {
@@ -137,6 +161,10 @@ export function resolveWorkspacePath(workspaceId: string): string | null {
  * Returns false for non-existent workspaces.
  */
 export function workspaceHasMaterialization(workspaceId: string): boolean {
+  if (!isNonEmptyString(workspaceId)) {
+    log(`[workspace-repo] workspaceHasMaterialization: invalid workspaceId`);
+    return false;
+  }
   log(`[workspace-repo] workspaceHasMaterialization workspaceId=${workspaceId}`);
   const workspace = storeGetWorkspace(workspaceId);
   if (!workspace) {

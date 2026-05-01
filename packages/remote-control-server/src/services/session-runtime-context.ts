@@ -22,6 +22,10 @@ import {
 type SessionWorkspacePatch = Parameters<typeof storeUpsertWorkspace>[1];
 type SessionStatePatch = Parameters<typeof storeUpsertSessionState>[1];
 
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0;
+}
+
 export interface WebSessionRuntimeContext {
   requestedSessionId: string;
   sessionId: string;
@@ -52,6 +56,9 @@ export type WebSessionRuntimeAccessResult =
   | { ok: false; error: WebSessionRuntimeAccessError };
 
 function requireSession(sessionId: string): SessionResponse {
+  if (!isNonEmptyString(sessionId)) {
+    throw new Error(`Invalid sessionId: must be a non-empty string`);
+  }
   const session = getSession(sessionId);
   if (!session) {
     throw new Error(`Session not found: ${sessionId}`);
@@ -168,6 +175,9 @@ export function upsertSessionRuntimeState(
 }
 
 export function getSessionSelectedRepos(sessionId: string): string[] {
+  if (!isNonEmptyString(sessionId)) {
+    return [];
+  }
   return getSessionRuntimeState(sessionId)?.selectedRepos ?? [];
 }
 
@@ -187,6 +197,18 @@ export function resolveOwnedWebSessionRuntimeContext(
     requireWorkspace?: boolean;
   } = {},
 ): WebSessionRuntimeAccessResult {
+  if (!isNonEmptyString(requestedSessionId)) {
+    return {
+      ok: false,
+      error: { status: 404, type: "not_found", message: "Invalid session ID" },
+    };
+  }
+  if (!isNonEmptyString(ownerUuid)) {
+    return {
+      ok: false,
+      error: { status: 403, type: "forbidden", message: "Invalid owner UUID" },
+    };
+  }
   const existingSessionId = resolveExistingWebSessionId(requestedSessionId);
   if (!existingSessionId) {
     return {
