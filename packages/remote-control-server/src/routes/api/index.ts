@@ -18,6 +18,7 @@ import {
   updateSessionTitle,
   updateSessionStatus,
   archiveSession,
+  resolveExistingWebSessionId,
 } from "../../services/session";
 import { storeBindSession, storeClearSessionRequiresAction, storeCreateUser, storeGetSessionWorker, storeListPendingPermissions, storeRemovePendingPermission, storeListSessionsByOwnerUuid } from "../../store";
 import { publishSessionEvent, loadPersistedEvents, getLastPersistedSeqNum, hydrateEventBusFromPersistence } from "../../services/transport";
@@ -27,6 +28,7 @@ import { spawn } from "child_process";
 import { subprocessManager } from "../../services/subprocess-manager";
 import { suggestFiles, suggestCommands } from "../../services/suggest/composerService";
 import { runWithSessionContext, getCurrentSessionContext } from "../../services/session-context";
+import { listActiveEnvironmentsResponse } from "../../services/environment";
 
 const app = new Hono();
 
@@ -83,6 +85,24 @@ app.get("/auth/validate", async (c) => {
   return c.json({ valid: false });
 });
 
+app.post("/bind", async (c) => {
+  const body = await c.req.json();
+  const sessionId = body.sessionId;
+  const uuid = c.req.query("uuid") || body.uuid;
+
+  if (!sessionId || !uuid) {
+    return c.json({ error: "sessionId and uuid are required" }, 400);
+  }
+
+  const resolvedSessionId = resolveExistingWebSessionId(sessionId);
+  if (!resolvedSessionId) {
+    return c.json({ error: "Session not found" }, 404);
+  }
+
+  storeBindSession(resolvedSessionId, uuid);
+  return c.json({ ok: true, sessionId: toWebSessionResponse({ ...getSession(resolvedSessionId)!, id: resolvedSessionId }).id });
+});
+
 // ── Sessions CRUD (web client shape) ─────────────────────────────────────────
 
 app.get("/sessions", uuidAuth, async (c) => {
@@ -103,6 +123,41 @@ app.post("/sessions", uuidAuth, async (c) => {
   storeBindSession(session.id, uuid);
   return c.json({ session: toWebSessionResponse(session) });
 });
+
+app.get("/sessions/:id/history", uuidAuth, withSessionContext("id", (c, sessionId) => {
+  const persisted = loadPersistedEvents(sessionId, 0).map((event) => ({
+    ...event,
+    direction: event.direction as "inbound" | "outbound",
+  }));
+  const lastPersistedSeq = persisted[persisted.length - 1]?.seqNum ?? 0;
+  const bus = getEventBus(sessionId, getLastPersistedSeqNum(sessionId));
+  const live = bus
+    .getEventsSince(lastPersistedSeq)
+    .map((event) => ({
+      ...event,
+      direction: event.direction as "inbound" | "outbound",
+    }));
+
+  const replayedRequestIds = new Set(
+    persisted
+      .filter((event) => event.type === "permission_request")
+      .map((event) => (event.payload as Record<string, unknown> | null)?.request_id as string | undefined)
+      .filter(Boolean),
+  );
+  const pendingPermissions = storeListPendingPermissions(sessionId)
+    .filter((perm) => !replayedRequestIds.has(perm.requestId))
+    .map((perm) => ({
+      id: perm.id,
+      sessionId: perm.sessionId,
+      type: "permission_request",
+      payload: perm.payload,
+      direction: "outbound" as const,
+      seqNum: Number.MAX_SAFE_INTEGER,
+      createdAt: perm.createdAt.getTime(),
+    }));
+
+  return c.json({ events: [...persisted, ...live, ...pendingPermissions] });
+}));
 
 app.get("/sessions/:id", uuidAuth, withSessionContext("id", (c, sessionId) => {
   const session = getSession(sessionId);
@@ -470,6 +525,10 @@ app.get("/sessions/:id/stream", uuidAuth, withSessionContext("id", (c, sessionId
   });
 }));
 
+app.get("/environments", uuidAuth, async (c) => {
+  return c.json(listActiveEnvironmentsResponse());
+});
+
 // ── Suggest ──────────────────────────────────────────────────────────────────
 
 app.get("/suggest/files", uuidAuth, async (c) => {
@@ -488,6 +547,15 @@ app.get("/suggest/commands", uuidAuth, async (c) => {
 
 // ── Command execute ──────────────────────────────────────────────────────────
 
+import {
+  getCommand,
+  getCommandPolicy,
+  isCommandAvailable,
+  isExecutableAsWebNative,
+  WEB_NATIVE_COMMANDS,
+} from "../../services/command/catalog";
+import type { CommandDefinition } from "../../services/command/catalog";
+
 app.post("/command/execute", uuidAuth, async (c) => {
   const body = await c.req.json();
   const command = body.command as string;
@@ -497,14 +565,66 @@ app.post("/command/execute", uuidAuth, async (c) => {
     return c.json({ error: "command is required" }, 400);
   }
 
+  // Extract command name (strip leading slash and args)
+  const commandName = command.replace(/^\//, "").split(/\s+/)[0].toLowerCase();
+
+  // Check if command exists in catalog
+  const cmd = getCommand(commandName);
+  if (!cmd) {
+    return c.json({ error: `Unknown command: /${commandName}` }, 404);
+  }
+
+  // Check feature flag availability
+  if (!isCommandAvailable(cmd)) {
+    return c.json(
+      { error: `Command /${commandName} is not available. Enable required feature flag.` },
+      403,
+    );
+  }
+
+  // Get policy and check if allowed
+  const policy = getCommandPolicy(cmd);
+  if (!policy.allowed || policy.blocked) {
+    return c.json({ error: `Command /${commandName} is blocked by policy` }, 403);
+  }
+
+  // Check workspace requirement
+  if (policy.requiresWorkspace && !sessionId) {
+    return c.json(
+      { error: `Command /${commandName} requires an active session` },
+      400,
+    );
+  }
+
+  // Handle web-native commands (can execute without subprocess)
+  if (isExecutableAsWebNative(commandName) && sessionId) {
+    const uuid = c.get("uuid")!;
+    const resolvedId = resolveOwnedWebSessionId(sessionId, uuid);
+    if (resolvedId) {
+      return runWithSessionContext(resolvedId, uuid, () => {
+        publishSessionEvent(resolvedId, "user", { content: command }, "inbound");
+        return c.json({
+          success: true,
+          delegated: true,
+          executionMode: policy.executionMode,
+          webNative: true,
+        });
+      });
+    }
+  }
+
+  // For prompt-type commands or when no session, delegate to subprocess
   if (sessionId) {
     const uuid = c.get("uuid")!;
     const resolvedId = resolveOwnedWebSessionId(sessionId, uuid);
     if (resolvedId) {
-      // Run with session context isolation
       return runWithSessionContext(resolvedId, uuid, () => {
         publishSessionEvent(resolvedId, "user", { content: command }, "inbound");
-        return c.json({ success: true, delegated: true });
+        return c.json({
+          success: true,
+          delegated: true,
+          executionMode: policy.executionMode,
+        });
       });
     }
   }
@@ -883,5 +1003,11 @@ app.put("/memory", uuidAuth, async (c) => {
     return c.json({ error: "Failed to write memory file" }, 500);
   }
 });
+
+import commandsCatalog from "./commands/catalog";
+import commandsPolicy from "./commands/policy";
+
+app.route("/commands/catalog", commandsCatalog);
+app.route("/commands", commandsPolicy);
 
 export default app;
