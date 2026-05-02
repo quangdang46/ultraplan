@@ -71,7 +71,7 @@ function useChecks(cwd?: string | null, sessionId?: string | null) {
 
     // 5. MCP servers
     try {
-      const mcp = await client.getMcpServers(resolvedCwd ?? undefined);
+      const mcp = await client.getMcpServers(resolvedCwd ?? undefined, sessionId ?? undefined);
       const count = mcp.servers.length;
       update("MCP servers", "ok", count === 0 ? "No servers configured" : `${count} server(s) configured`);
     } catch {
@@ -80,7 +80,7 @@ function useChecks(cwd?: string | null, sessionId?: string | null) {
 
     // 6. Memory files
     try {
-      const mem = await client.getMemoryFiles(resolvedCwd ?? undefined);
+      const mem = await client.getMemoryFiles(resolvedCwd ?? undefined, sessionId ?? undefined);
       const count = mem.files.length;
       update("Memory files", "ok", count === 0 ? "No CLAUDE.md files found" : `${count} file(s) found`);
     } catch {

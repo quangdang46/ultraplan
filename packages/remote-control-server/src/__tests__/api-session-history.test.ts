@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildSessionMessagesFromEvents } from "../routes/api/index";
+import {
+  buildSessionHistoryResponse,
+  buildSessionMessagesFromEvents,
+} from "../routes/api/index";
 
 describe("api session history builder", () => {
   test("reconstructs user, assistant, and tool transcript blocks", () => {
@@ -102,5 +105,125 @@ describe("api session history builder", () => {
         ],
       },
     ]);
+  });
+
+  test("reports the latest replay cursor for hydrated history", () => {
+    const events = [
+      {
+        type: "user",
+        payload: { content: "hello" },
+        seqNum: 4,
+        createdAt: Date.parse("2026-05-01T10:00:00.000Z"),
+      },
+      {
+        type: "content_delta",
+        payload: {
+          delta: { type: "text_delta", text: "world" },
+        },
+        seqNum: 9,
+        createdAt: Date.parse("2026-05-01T10:00:01.000Z"),
+      },
+      {
+        type: "message_end",
+        payload: { id: "msg_1" },
+        seqNum: 12,
+        createdAt: Date.parse("2026-05-01T10:00:02.000Z"),
+      },
+    ];
+
+    expect(buildSessionHistoryResponse(events)).toEqual({
+      messages: [
+        {
+          role: "user",
+          content: "hello",
+          timestamp: "2026-05-01T10:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "world",
+          timestamp: "2026-05-01T10:00:01.000Z",
+          blocks: [
+            {
+              type: "text",
+              text: "world",
+            },
+          ],
+        },
+      ],
+      lastSeqNum: 12,
+    });
+  });
+
+  test("treats system clear as a transcript boundary", () => {
+    const events = [
+      {
+        type: "user",
+        payload: { content: "before clear" },
+        seqNum: 1,
+        createdAt: Date.parse("2026-05-01T10:00:00.000Z"),
+      },
+      {
+        type: "content_delta",
+        payload: {
+          delta: { type: "text_delta", text: "old reply" },
+        },
+        seqNum: 2,
+        createdAt: Date.parse("2026-05-01T10:00:01.000Z"),
+      },
+      {
+        type: "message_end",
+        payload: { id: "msg_old" },
+        seqNum: 3,
+        createdAt: Date.parse("2026-05-01T10:00:02.000Z"),
+      },
+      {
+        type: "system",
+        payload: { type: "clear" },
+        seqNum: 4,
+        createdAt: Date.parse("2026-05-01T10:00:03.000Z"),
+      },
+      {
+        type: "user",
+        payload: { content: "after clear" },
+        seqNum: 5,
+        createdAt: Date.parse("2026-05-01T10:00:04.000Z"),
+      },
+      {
+        type: "content_delta",
+        payload: {
+          delta: { type: "text_delta", text: "new reply" },
+        },
+        seqNum: 6,
+        createdAt: Date.parse("2026-05-01T10:00:05.000Z"),
+      },
+      {
+        type: "message_end",
+        payload: { id: "msg_new" },
+        seqNum: 7,
+        createdAt: Date.parse("2026-05-01T10:00:06.000Z"),
+      },
+    ];
+
+    expect(buildSessionHistoryResponse(events)).toEqual({
+      messages: [
+        {
+          role: "user",
+          content: "after clear",
+          timestamp: "2026-05-01T10:00:04.000Z",
+        },
+        {
+          role: "assistant",
+          content: "new reply",
+          timestamp: "2026-05-01T10:00:05.000Z",
+          blocks: [
+            {
+              type: "text",
+              text: "new reply",
+            },
+          ],
+        },
+      ],
+      lastSeqNum: 7,
+    });
   });
 });

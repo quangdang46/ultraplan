@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { getApiClient } from '../api/client';
 import type { ReplyQuote, ServerEvent } from '../api/types';
+import { hydrateSessionMessages } from '../features/chat/hydrateSessionMessages';
 import type {
   PendingPermission,
   StreamState,
@@ -90,6 +91,11 @@ function isRetryableError(err: unknown): boolean {
     }
   }
   return false;
+}
+
+function createUserMessageId(): string {
+  return globalThis.crypto?.randomUUID?.()
+    ?? `user_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export function useStream() {
@@ -565,7 +571,7 @@ export function useStream() {
 
       await ensureAuthenticated();
 
-      const userMessageId = `user_${Date.now()}`;
+      const userMessageId = createUserMessageId();
       const userMessage: Message = {
         id: userMessageId,
         role: 'user',
@@ -597,7 +603,7 @@ export function useStream() {
         while (true) {
           try {
             for await (const event of client.streamChat(
-              { message: content, quote, sessionId },
+              { message: content, quote, sessionId, userMessageId },
               { signal: abortControllerRef.current.signal }
             )) {
               applyEvent(event);
@@ -773,13 +779,140 @@ export function useStream() {
     [client, ensureAuthenticated, state.sessionId]
   );
 
+  const clearMessages = useCallback((sessionId: string | null = null) => {
+    toolInputBuffersRef.current.clear();
+    toolStartTimesRef.current.clear();
+    serverEpochRef.current = null;
+    lastSeqNumRef.current = 0;
+    processedSeqNumsRef.current.clear();
+    stopToolTimer();
+    setState((s) => ({
+      ...s,
+      sessionId,
+      isStreaming: false,
+      pendingRouteSync: false,
+      messages: [],
+      activeTools: new Map(),
+      pendingPermissions: [],
+      error: null,
+      connectionState: 'connected',
+    }));
+  }, [stopToolTimer]);
+
   const executeSlashCommand = useCallback(
     async (command: string, sessionId?: string): Promise<void> => {
       const normalized = command.trim();
       if (!normalized) return;
-      await sendMessage(normalized, undefined, sessionId);
+
+      await ensureAuthenticated();
+
+      let commandCwd: string | undefined;
+      if (!sessionId) {
+        try {
+          commandCwd = (await client.getState()).cwd;
+        } catch {
+          commandCwd = undefined;
+        }
+      }
+
+      const userMessageId = createUserMessageId();
+      const userMessage: Message = {
+        id: userMessageId,
+        role: 'user',
+        content: normalized,
+        toolCalls: [],
+      };
+      const assistantPlaceholder: Message = {
+        id: `assistant_placeholder_${Date.now()}`,
+        role: 'assistant',
+        content: '',
+        toolCalls: [],
+      };
+
+      setState((s) => ({
+        ...s,
+        sessionId,
+        isStreaming: true,
+        error: null,
+        messages: [...s.messages, userMessage, assistantPlaceholder],
+      }));
+
+      try {
+        const response = await client.executeCommand(
+          normalized,
+          commandCwd,
+          sessionId,
+          userMessageId,
+        );
+        const nextSessionId = response.sessionId ?? sessionId;
+
+        if (!sessionId && nextSessionId) {
+          setState((s) => ({
+            ...s,
+            sessionId: nextSessionId,
+            pendingRouteSync: true,
+          }));
+        }
+
+        if (response.clearConversation) {
+          clearMessages(nextSessionId ?? null);
+          return;
+        }
+
+        if (response.refreshHistory && nextSessionId) {
+          const history = await client.getSessionHistory(nextSessionId);
+          const converted = hydrateSessionMessages(
+            history.messages.filter(
+              (
+                message,
+              ): message is typeof message & {
+                role: 'user' | 'assistant';
+              } => message.role === 'user' || message.role === 'assistant',
+            ),
+          );
+
+          toolInputBuffersRef.current.clear();
+          toolStartTimesRef.current.clear();
+          serverEpochRef.current = null;
+          processedSeqNumsRef.current.clear();
+          lastSeqNumRef.current = history.lastSeqNum;
+          stopToolTimer();
+
+          setState((s) => ({
+            ...s,
+            sessionId: nextSessionId,
+            pendingRouteSync: false,
+            messages: converted,
+            activeTools: new Map(),
+            error: null,
+            isStreaming: false,
+            connectionState: 'connected',
+          }));
+          return;
+        }
+
+        if (!response.delegated && response.output) {
+          setState((s) => ({
+            ...s,
+            isStreaming: false,
+            messages: s.messages.map((message, index) =>
+              index === s.messages.length - 1 && message.role === 'assistant'
+                ? { ...message, content: response.output ?? '' }
+                : message,
+            ),
+          }));
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : 'Command execution failed';
+        setState((s) => ({
+          ...s,
+          isStreaming: false,
+          error,
+        }));
+        throw err;
+      }
     },
-    [sendMessage]
+    [clearMessages, client, ensureAuthenticated, stopToolTimer]
   );
 
   const cancelStream = useCallback(async () => {
@@ -820,36 +953,22 @@ export function useStream() {
     stopToolTimer();
   }, [stopToolTimer]);
 
-  const clearMessages = useCallback((sessionId: string | null = null) => {
-    toolInputBuffersRef.current.clear();
-    toolStartTimesRef.current.clear();
-    serverEpochRef.current = null;
-    lastSeqNumRef.current = 0;
-    processedSeqNumsRef.current.clear();
-    stopToolTimer();
-    setState((s) => ({
-      ...s,
-      sessionId,
-      isStreaming: false,
-      pendingRouteSync: false,
-      messages: [],
-      activeTools: new Map(),
-      pendingPermissions: [],
-      error: null,
-      connectionState: 'connected',
-    }));
-  }, [stopToolTimer]);
-
   const loadMessages = useCallback((
     messages: Message[],
     sessionId?: string | null,
-    options?: { preservePendingPermissions?: boolean },
+    options?: {
+      preservePendingPermissions?: boolean;
+      lastSeqNum?: number;
+    },
   ) => {
     toolInputBuffersRef.current.clear();
     toolStartTimesRef.current.clear();
     serverEpochRef.current = null;
-    lastSeqNumRef.current = 0;
     processedSeqNumsRef.current.clear();
+    lastSeqNumRef.current =
+      typeof options?.lastSeqNum === 'number' && options.lastSeqNum > 0
+        ? options.lastSeqNum
+        : 0;
     stopToolTimer();
     setState((s) => ({
       ...s,

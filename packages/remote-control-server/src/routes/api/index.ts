@@ -6,7 +6,7 @@
  * suggest, command, chat stream/control, session messages).
  */
 import { Hono } from "hono";
-import { uuidAuth } from "../../auth/middleware";
+import { apiKeyAuth, uuidAuth } from "../../auth/middleware";
 import { issueToken, resolveToken } from "../../auth/token";
 import { validateApiKey } from "../../auth/api-key";
 import {
@@ -17,7 +17,6 @@ import {
   toWebSessionResponse,
   updateSessionTitle,
   updateSessionStatus,
-  archiveSession,
   resolveExistingWebSessionId,
 } from "../../services/session";
 import {
@@ -27,24 +26,66 @@ import {
   storeGetSessionWorker,
   storeGetWorkspaceBySession,
   storeListPendingPermissions,
+  storeListSessions,
   storeRemovePendingPermission,
   storeListSessionsByOwnerUuid,
 } from "../../store";
-import { publishSessionEvent, loadPersistedEvents, getLastPersistedSeqNum, hydrateEventBusFromPersistence } from "../../services/transport";
+import {
+  publishSessionEvent,
+  loadPersistedEvents,
+  getLastPersistedSeqNum,
+  hydrateEventBusFromPersistence,
+  truncateSessionEvents,
+} from "../../services/transport";
 import { getEventBus } from "../../transport/event-bus";
 import { log, error as logError } from "../../logger";
 import { spawn, spawnSync } from "child_process";
 import { subprocessManager } from "../../services/subprocess-manager";
 import { resumeSession } from "../../services/session-resume";
+import { ensureSessionWorkspace } from "../../services/session-workspace";
+import { forkSession } from "../../services/session-fork";
 import { suggestFiles, suggestCommands } from "../../services/suggest/composerService";
-import { runWithSessionContext, getCurrentSessionContext } from "../../services/session-context";
+import { runWithSessionContext } from "../../services/session-context";
 import { listActiveEnvironmentsResponse } from "../../services/environment";
+import { config } from "../../config";
 import {
   resolveOwnedWebSessionRuntimeContext,
   upsertSessionRuntimeState,
 } from "../../services/session-runtime-context";
+import { archiveSession as archiveManagedSession } from "../../services/session-archive";
+import { toClientPayload } from "../../transport/client-payload";
+import { resolveOwnedWorkspaceCwd } from "../../services/workspace-access";
 
 const app = new Hono();
+const SSE_KEEPALIVE_MS = Math.max(1000, config.wsKeepaliveInterval * 1000);
+
+type PermissionControlPayload = {
+  request_id?: unknown;
+  approved?: unknown;
+  updated_input?: unknown;
+  updated_permissions?: unknown;
+  message?: unknown;
+};
+
+function buildSdkPermissionControlMessage(
+  sessionId: string,
+  payload: PermissionControlPayload,
+): string {
+  const sdkMessage = toClientPayload({
+    id:
+      typeof payload.request_id === "string" && payload.request_id
+        ? payload.request_id
+        : crypto.randomUUID(),
+    sessionId,
+    type: "permission_response",
+    payload,
+    direction: "outbound",
+    seqNum: 1,
+    createdAt: Date.now(),
+  });
+
+  return JSON.stringify(sdkMessage);
+}
 
 /**
  * Helper to wrap route handlers with session context.
@@ -109,6 +150,142 @@ function normalizeOptionalString(
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Map effort level strings to thinking token budgets for live CLI updates.
+ * The CLI's `set_max_thinking_tokens` control request accepts numeric budgets.
+ * null clears the override (model default), 0 disables extended thinking.
+ */
+function effortToThinkingTokens(effort: string | null): number | null {
+  if (effort === null || effort === "") return null; // clear → model default
+  switch (effort) {
+    case "low":
+      return 0; // disable extended thinking for fastest responses
+    case "medium":
+      return 10_000;
+    case "high":
+      return 32_000;
+    case "xhigh":
+      return 64_000;
+    case "max":
+      return 128_000;
+    default:
+      return null;
+  }
+}
+
+async function applyLiveSessionRuntimeUpdates(
+  sessionId: string,
+  patch: {
+    model?: string | null;
+    permissionMode?: string | null;
+    thinkingEffort?: string | null;
+  },
+): Promise<void> {
+  if (!subprocessManager.isRunning(sessionId)) {
+    return;
+  }
+
+  if (patch.model !== undefined) {
+    await subprocessManager.requestControl(sessionId, {
+      subtype: "set_model",
+      ...(patch.model ? { model: patch.model } : {}),
+    });
+  }
+
+  if (patch.permissionMode !== undefined) {
+    await subprocessManager.requestControl(sessionId, {
+      subtype: "set_permission_mode",
+      mode: patch.permissionMode ?? "default",
+    });
+  }
+
+  if (patch.thinkingEffort !== undefined) {
+    const tokens = effortToThinkingTokens(patch.thinkingEffort);
+    await subprocessManager.requestControl(sessionId, {
+      subtype: "set_max_thinking_tokens",
+      max_thinking_tokens: tokens,
+    });
+  }
+}
+
+function resolveRequestedSessionId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
+
+async function ensureOwnedSessionWorkspace(input: {
+  uuid: string;
+  sessionId?: string | null;
+  cwd?: string | null;
+}): Promise<
+  | { ok: true; sessionId: string; cwd: string }
+  | { ok: false; status: number; error: string }
+> {
+  const requestedSessionId = resolveRequestedSessionId(input.sessionId);
+
+  let resolvedId: string | undefined;
+  if (requestedSessionId) {
+    resolvedId = resolveOwnedWebSessionId(requestedSessionId, input.uuid) ?? undefined;
+    if (!resolvedId) {
+      return { ok: false, status: 403, error: "Session not found or not owned" };
+    }
+  } else {
+    const session = createSession({
+      title: "New Session",
+      source: "web",
+      cwd: input.cwd ?? null,
+    });
+    storeBindSession(session.id, input.uuid);
+
+    try {
+      await ensureSessionWorkspace(session.id, {
+        cwd: input.cwd ?? null,
+        forceIsolation: true,
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        status: 500,
+        error: `Failed to create isolated workspace: ${String(err)}`,
+      };
+    }
+
+    resolvedId = session.id;
+  }
+
+  let workspace = storeGetWorkspaceBySession(resolvedId);
+  if (!workspace || workspace.strategy === "same-dir") {
+    try {
+      const ensured = await ensureSessionWorkspace(resolvedId, {
+        cwd:
+          input.cwd ||
+          workspace?.workspacePath ||
+          workspace?.sourceRoot ||
+          process.cwd(),
+        forceIsolation: true,
+      });
+      workspace = ensured.workspace;
+    } catch (err) {
+      return {
+        ok: false,
+        status: 500,
+        error: `Failed to create isolated workspace: ${String(err)}`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    sessionId: resolvedId,
+    cwd:
+      workspace?.workspacePath ||
+      workspace?.sourceRoot ||
+      input.cwd ||
+      process.cwd(),
+  };
 }
 
 function toEventTimestamp(event: { createdAt?: number }): string {
@@ -202,6 +379,13 @@ export function buildSessionMessagesFromEvents(
     const timestamp = toEventTimestamp(event);
 
     switch (event.type) {
+      case "system": {
+        if (payload?.type === "clear") {
+          assistantDraft = null;
+          messages.length = 0;
+        }
+        break;
+      }
       case "user":
       case "user_message": {
         flushAssistantDraft();
@@ -360,6 +544,123 @@ export function buildSessionMessagesFromEvents(
   return messages;
 }
 
+export function buildSessionHistoryResponse(
+  events: Array<{
+    type: string;
+    payload: unknown;
+    seqNum: number;
+    createdAt: number;
+  }>,
+) {
+  return {
+    messages: buildSessionMessagesFromEvents(events),
+    lastSeqNum: events[events.length - 1]?.seqNum ?? 0,
+  };
+}
+
+function resolveLatestRewindTarget(sessionId: string): {
+  targetUserMessageId: string;
+  resumeSessionAt: string | null;
+  retainedSeqNum: number;
+} {
+  const events = collectSessionEvents(sessionId);
+  const latestUserEvent = [...events].reverse().find((event) => {
+    if (event.direction !== "inbound") return false;
+    if (event.type !== "user" && event.type !== "user_message") return false;
+    const payload = asRecord(event.payload);
+    return typeof payload?.uuid === "string" && payload.uuid.length > 0;
+  });
+  const latestUserPayload = asRecord(latestUserEvent?.payload);
+  const targetUserMessageId =
+    typeof latestUserPayload?.uuid === "string" && latestUserPayload.uuid
+      ? latestUserPayload.uuid
+      : null;
+
+  if (!targetUserMessageId || !latestUserEvent) {
+    throw new Error("Latest user turn is missing a stable message id for rewind");
+  }
+
+  let resumeSessionAt: string | null = null;
+  let retainedSeqNum = 0;
+
+  for (const event of events) {
+    if (event.seqNum >= latestUserEvent.seqNum) {
+      break;
+    }
+    if (event.direction !== "outbound" || event.type !== "message_end") {
+      continue;
+    }
+
+    const payload = asRecord(event.payload);
+    if (typeof payload?.id !== "string" || payload.id.length === 0) {
+      continue;
+    }
+
+    resumeSessionAt = payload.id;
+    retainedSeqNum = event.seqNum;
+  }
+
+  return {
+    targetUserMessageId,
+    resumeSessionAt,
+    retainedSeqNum,
+  };
+}
+
+async function rewindLatestTurnFiles(
+  sessionId: string,
+  cwd: string,
+): Promise<{
+  success: true;
+  userMessageId: string;
+  filesChanged?: string[];
+  insertions?: number;
+  deletions?: number;
+}> {
+  const {
+    targetUserMessageId,
+    resumeSessionAt,
+    retainedSeqNum,
+  } = resolveLatestRewindTarget(sessionId);
+
+  const resumeSession = !subprocessManager.isRunning(sessionId);
+  await subprocessManager.getOrSpawn(sessionId, cwd, resumeSession);
+
+  const dryRunResult = await subprocessManager.requestControl(sessionId, {
+    subtype: "rewind_files",
+    user_message_id: targetUserMessageId,
+    dry_run: true,
+  });
+
+  await subprocessManager.requestControl(sessionId, {
+    subtype: "rewind_files",
+    user_message_id: targetUserMessageId,
+  });
+
+  await subprocessManager.stop(sessionId, { suppressExitEvents: true });
+  truncateSessionEvents(sessionId, retainedSeqNum);
+  await subprocessManager.getOrSpawn(
+    sessionId,
+    cwd,
+    Boolean(resumeSessionAt),
+    resumeSessionAt ?? undefined,
+  );
+
+  return {
+    success: true,
+    userMessageId: targetUserMessageId,
+    ...(Array.isArray(dryRunResult.filesChanged)
+      ? { filesChanged: dryRunResult.filesChanged as string[] }
+      : {}),
+    ...(typeof dryRunResult.insertions === "number"
+      ? { insertions: dryRunResult.insertions }
+      : {}),
+    ...(typeof dryRunResult.deletions === "number"
+      ? { deletions: dryRunResult.deletions }
+      : {}),
+  };
+}
+
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 app.post("/auth/init", async (c) => {
@@ -431,7 +732,19 @@ app.post("/sessions", uuidAuth, async (c) => {
     cwd: body.cwd || null,
   });
   storeBindSession(session.id, uuid);
-  return c.json({ session: toWebSessionResponse(session) });
+
+  try {
+    await ensureSessionWorkspace(session.id, {
+      cwd: body.cwd || null,
+      forceIsolation: true,
+    });
+  } catch (err) {
+    logError("Failed to provision session workspace", String(err));
+    return c.json({ error: `Failed to create isolated workspace: ${String(err)}` }, 500);
+  }
+
+  const hydrated = getSession(session.id);
+  return c.json({ session: toWebSessionResponse(hydrated ?? session) });
 });
 
 app.get("/sessions/:id/history", uuidAuth, withSessionContext("id", (c, sessionId) => {
@@ -491,9 +804,32 @@ app.patch("/sessions/:id", uuidAuth, withSessionContext("id", async (c, sessionI
   return c.json({ success: true });
 }));
 
-app.delete("/sessions/:id", uuidAuth, withSessionContext("id", (c, sessionId) => {
-  archiveSession(sessionId);
+app.delete("/sessions/:id", uuidAuth, withSessionContext("id", async (c, sessionId) => {
+  await archiveManagedSession(sessionId);
   return c.json({ success: true });
+}));
+
+app.post("/sessions/:id/fork", uuidAuth, withSessionContext("id", async (c, sessionId, uuid) => {
+  const sourceWorkspace = storeGetWorkspaceBySession(sessionId);
+  if (!sourceWorkspace || sourceWorkspace.strategy === "same-dir") {
+    await ensureSessionWorkspace(sessionId, {
+      cwd: sourceWorkspace?.workspacePath || sourceWorkspace?.sourceRoot || process.cwd(),
+      forceIsolation: true,
+    });
+  }
+
+  const result = await forkSession(sessionId);
+  if (!result.success || !result.newSessionId) {
+    return c.json({ error: result.error ?? "Failed to fork session" }, 500);
+  }
+
+  storeBindSession(result.newSessionId, uuid);
+  const session = getSession(result.newSessionId);
+  if (!session) {
+    return c.json({ error: "Forked session not found" }, 500);
+  }
+
+  return c.json({ session: toWebSessionResponse(session) });
 }));
 
 // Resume an interrupted session (re-spawn subprocess)
@@ -503,6 +839,17 @@ app.post("/sessions/:id/resume", uuidAuth, withSessionContext("id", async (c, se
   }
 
   try {
+    const existingWorkspace = storeGetWorkspaceBySession(sessionId);
+    if (!existingWorkspace || existingWorkspace.strategy === "same-dir") {
+      await ensureSessionWorkspace(sessionId, {
+        cwd:
+          existingWorkspace?.workspacePath ||
+          existingWorkspace?.sourceRoot ||
+          process.cwd(),
+        forceIsolation: true,
+      });
+    }
+
     const resumed = await resumeSession(sessionId);
     if (!resumed.success) {
       updateSessionStatus(sessionId, "interrupted");
@@ -613,6 +960,19 @@ app.patch("/state", uuidAuth, async (c) => {
     (body as Record<string, unknown>).thinkingEffort,
   );
 
+  try {
+    await applyLiveSessionRuntimeUpdates(runtime.context.sessionId, {
+      ...(model !== undefined ? { model } : {}),
+      ...(permissionMode !== undefined ? { permissionMode } : {}),
+      ...(thinkingEffort !== undefined ? { thinkingEffort } : {}),
+    });
+  } catch (error) {
+    return c.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      409,
+    );
+  }
+
   const updated = upsertSessionRuntimeState(runtime.context.sessionId, {
     ...(model !== undefined ? { model } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
@@ -665,28 +1025,21 @@ app.post("/chat/stream", uuidAuth, async (c) => {
     sessionId?: string;
     cwd?: string;
   };
+  const userMessageId =
+    normalizeOptionalString((body as Record<string, unknown>).userMessageId)
+    ?? crypto.randomUUID();
 
-  // Resolve or auto-create session
-  let resolvedId: string | undefined;
-  if (rawSessionId) {
-    resolvedId = resolveOwnedWebSessionId(rawSessionId, uuid) ?? undefined;
-    if (!resolvedId) return c.json({ error: "Session not found or not owned" }, 403);
-  } else {
-    const session = createSession({
-      title: "New Session",
-      source: "web",
-      cwd: rawCwd ?? null,
-    });
-    storeBindSession(session.id, uuid);
-    resolvedId = session.id;
+  const resolved = await ensureOwnedSessionWorkspace({
+    uuid,
+    sessionId: rawSessionId,
+    cwd: rawCwd ?? null,
+  });
+  if (!resolved.ok) {
+    c.status(resolved.status as 403 | 500);
+    return c.json({ error: resolved.error });
   }
-
-  const workspace = storeGetWorkspaceBySession(resolvedId);
-  const effectiveCwd =
-    rawCwd ||
-    workspace?.workspacePath ||
-    workspace?.sourceRoot ||
-    process.cwd();
+  const resolvedId = resolved.sessionId;
+  const effectiveCwd = resolved.cwd;
 
   // Run the streaming handler with session context isolation
   return runWithSessionContext(resolvedId, uuid, async () => {
@@ -694,38 +1047,75 @@ app.post("/chat/stream", uuidAuth, async (c) => {
     // miss early events (session_created, message_start).
     const bus = getEventBus(resolvedId, getLastPersistedSeqNum(resolvedId));
     const encoder = new TextEncoder();
-    const earlyEvents: Array<{ type: string; payload: unknown }> = [];
+    const earlyEvents: Array<{ type: string; payload: unknown; seqNum: number }> = [];
     let sseController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let closed = false;
+    let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+
+    const cleanup = () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      if (keepAliveTimer) {
+        clearInterval(keepAliveTimer);
+        keepAliveTimer = null;
+      }
+      sseController = null;
+      unsub();
+    };
 
     // Collect events that arrive before the SSE controller is ready
     const unsub = bus.subscribe((event) => {
       if (event.direction === "inbound") return;
-      const data = JSON.stringify({ type: event.type, data: event.payload });
+      const data = JSON.stringify({
+        type: event.type,
+        data: event.payload,
+        seqNum: event.seqNum,
+      });
       const chunk = encoder.encode(`event: message\ndata: ${data}\n\n`);
 
       if (sseController) {
-        try { sseController.enqueue(chunk); } catch { /* closed */ }
+        try {
+          sseController.enqueue(chunk);
+        } catch {
+          cleanup();
+          return;
+        }
         if (event.type === "message_end" || event.type === "session_ended") {
           try { sseController.close(); } catch { /* already closed */ }
-          unsub();
+          cleanup();
         }
       } else {
-        earlyEvents.push({ type: event.type, payload: event.payload });
+        earlyEvents.push({
+          type: event.type,
+          payload: event.payload,
+          seqNum: event.seqNum,
+        });
       }
     });
 
     // Publish user message to EventBus (for message history)
-    publishSessionEvent(resolvedId, "user", { content: message ?? "", quote }, "inbound");
+    publishSessionEvent(
+      resolvedId,
+      "user",
+      { content: message ?? "", quote, uuid: userMessageId },
+      "inbound",
+    );
 
     // Spawn subprocess (no-op if already running), then enqueue the user message
     try {
       await subprocessManager.getOrSpawn(resolvedId, effectiveCwd);
       subprocessManager.enqueueMessage(
         resolvedId,
-        JSON.stringify({ type: "user", message: { role: "user", content: message ?? "" } }),
+        JSON.stringify({
+          type: "user",
+          uuid: userMessageId,
+          message: { role: "user", content: message ?? "" },
+        }),
       );
     } catch (err) {
-      unsub();
+      cleanup();
       logError("Failed to spawn Claude subprocess", String(err));
       return c.json({ error: `Failed to start Claude: ${String(err)}` }, 500);
     }
@@ -737,15 +1127,27 @@ app.post("/chat/stream", uuidAuth, async (c) => {
 
         // Flush any events that arrived before the controller was ready
         for (const early of earlyEvents) {
-          const data = JSON.stringify({ type: early.type, data: early.payload });
+          const data = JSON.stringify({
+            type: early.type,
+            data: early.payload,
+            seqNum: early.seqNum,
+          });
           controller.enqueue(encoder.encode(`event: message\ndata: ${data}\n\n`));
         }
         earlyEvents.length = 0;
-
-        c.req.raw.signal.addEventListener("abort", () => {
-          unsub();
-          try { controller.close(); } catch { /* already closed */ }
-        });
+        keepAliveTimer = setInterval(() => {
+          if (closed || !sseController) {
+            return;
+          }
+          try {
+            controller.enqueue(encoder.encode(": keep-alive\n\n"));
+          } catch {
+            cleanup();
+          }
+        }, SSE_KEEPALIVE_MS);
+      },
+      cancel() {
+        cleanup();
       },
     });
 
@@ -775,14 +1177,34 @@ app.post("/chat/control", uuidAuth, async (c) => {
 
   // Run with session context isolation
   return runWithSessionContext(resolvedId, uuid, async () => {
-    // Forward control response to subprocess stdin
-    const controlPayload = JSON.stringify({
-      type: "control_response",
+    const updatedInput =
+      body.updatedInput &&
+      typeof body.updatedInput === "object" &&
+      !Array.isArray(body.updatedInput)
+        ? (body.updatedInput as Record<string, unknown>)
+        : body.updated_input &&
+            typeof body.updated_input === "object" &&
+            !Array.isArray(body.updated_input)
+          ? (body.updated_input as Record<string, unknown>)
+          : undefined;
+    const updatedPermissions = Array.isArray(body.updatedPermissions)
+      ? body.updatedPermissions
+      : Array.isArray(body.updated_permissions)
+        ? body.updated_permissions
+        : undefined;
+    const permissionResponsePayload: PermissionControlPayload = {
       request_id: body.request_id,
       approved: body.approved,
-      updated_input: body.updatedInput,
-      message: body.message,
-    });
+      ...(updatedInput ? { updated_input: updatedInput } : {}),
+      ...(updatedPermissions ? { updated_permissions: updatedPermissions } : {}),
+      ...(typeof body.message === "string" ? { message: body.message } : {}),
+    };
+
+    // Forward an SDK-compatible nested control_response to the subprocess.
+    const controlPayload = buildSdkPermissionControlMessage(
+      resolvedId,
+      permissionResponsePayload,
+    );
     subprocessManager.sendControl(resolvedId, controlPayload);
     storeClearSessionRequiresAction(resolvedId);
 
@@ -791,12 +1213,12 @@ app.post("/chat/control", uuidAuth, async (c) => {
       storeRemovePendingPermission(resolvedId, body.request_id);
     }
 
-    publishSessionEvent(resolvedId, "permission_response", {
-      request_id: body.request_id,
-      approved: body.approved,
-      updated_input: body.updatedInput,
-      message: body.message,
-    }, "inbound");
+    publishSessionEvent(
+      resolvedId,
+      "permission_response",
+      permissionResponsePayload,
+      "inbound",
+    );
 
     return c.json({ success: true });
   });
@@ -828,7 +1250,7 @@ app.post("/chat/interrupt", uuidAuth, async (c) => {
 // ── Session messages ─────────────────────────────────────────────────────────
 
 app.get("/sessions/:id/messages", uuidAuth, withSessionContext("id", (c, sessionId) => {
-  return c.json({ messages: buildSessionMessagesFromEvents(collectSessionEvents(sessionId)) });
+  return c.json(buildSessionHistoryResponse(collectSessionEvents(sessionId)));
 }));
 
 // ── Session stream (SSE with normalized { type, data } shape) ────────────────
@@ -838,6 +1260,8 @@ app.get("/sessions/:id/stream", uuidAuth, withSessionContext("id", (c, sessionId
   const bus = getEventBus(sessionId, getLastPersistedSeqNum(sessionId));
   const encoder = new TextEncoder();
   const fromSeqNum = Number(c.req.query("from") || "0");
+  let unsub: (() => void) | null = null;
+  let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
 
   const stream = new ReadableStream({
     start(controller) {
@@ -846,7 +1270,11 @@ app.get("/sessions/:id/stream", uuidAuth, withSessionContext("id", (c, sessionId
 
       for (const event of persisted) {
         replayedSeqNums.add(event.seqNum);
-        const data = JSON.stringify({ type: event.type, data: event.payload });
+        const data = JSON.stringify({
+          type: event.type,
+          data: event.payload,
+          seqNum: event.seqNum,
+        });
         controller.enqueue(encoder.encode(`id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`));
       }
 
@@ -855,7 +1283,11 @@ app.get("/sessions/:id/stream", uuidAuth, withSessionContext("id", (c, sessionId
         .filter((event) => event.direction !== "inbound" && !replayedSeqNums.has(event.seqNum));
 
       for (const event of missed) {
-        const data = JSON.stringify({ type: event.type, data: event.payload });
+        const data = JSON.stringify({
+          type: event.type,
+          data: event.payload,
+          seqNum: event.seqNum,
+        });
         controller.enqueue(encoder.encode(`id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`));
       }
 
@@ -876,7 +1308,11 @@ app.get("/sessions/:id/stream", uuidAuth, withSessionContext("id", (c, sessionId
             "outbound",
           );
           replayedRequestIds.add(perm.requestId);
-          const data = JSON.stringify({ type: replayEvent.type, data: replayEvent.payload });
+          const data = JSON.stringify({
+            type: replayEvent.type,
+            data: replayEvent.payload,
+            seqNum: replayEvent.seqNum,
+          });
           controller.enqueue(
             encoder.encode(
               `id: ${replayEvent.seqNum}\nevent: message\ndata: ${data}\n\n`,
@@ -906,7 +1342,11 @@ app.get("/sessions/:id/stream", uuidAuth, withSessionContext("id", (c, sessionId
         if (typeof pendingRequestId === "string" && pendingRequestId.length > 0) {
           replayedRequestIds.add(pendingRequestId);
         }
-        const data = JSON.stringify({ type: replayEvent.type, data: replayEvent.payload });
+        const data = JSON.stringify({
+          type: replayEvent.type,
+          data: replayEvent.payload,
+          seqNum: replayEvent.seqNum,
+        });
         controller.enqueue(
           encoder.encode(
             `id: ${replayEvent.seqNum}\nevent: message\ndata: ${data}\n\n`,
@@ -914,16 +1354,44 @@ app.get("/sessions/:id/stream", uuidAuth, withSessionContext("id", (c, sessionId
         );
       }
 
-      const unsub = bus.subscribe((event) => {
+      unsub = bus.subscribe((event) => {
         if (event.direction === "inbound") return;
-        const data = JSON.stringify({ type: event.type, data: event.payload });
-        controller.enqueue(encoder.encode(`id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`));
+        const data = JSON.stringify({
+          type: event.type,
+          data: event.payload,
+          seqNum: event.seqNum,
+        });
+        try {
+          controller.enqueue(encoder.encode(`id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`));
+        } catch {
+          unsub?.();
+          unsub = null;
+          if (keepAliveTimer) {
+            clearInterval(keepAliveTimer);
+            keepAliveTimer = null;
+          }
+        }
       });
-
-      c.req.raw.signal.addEventListener("abort", () => {
-        unsub();
-        controller.close();
-      });
+      keepAliveTimer = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": keep-alive\n\n"));
+        } catch {
+          unsub?.();
+          unsub = null;
+          if (keepAliveTimer) {
+            clearInterval(keepAliveTimer);
+            keepAliveTimer = null;
+          }
+        }
+      }, SSE_KEEPALIVE_MS);
+    },
+    cancel() {
+      unsub?.();
+      unsub = null;
+      if (keepAliveTimer) {
+        clearInterval(keepAliveTimer);
+        keepAliveTimer = null;
+      }
     },
   });
 
@@ -943,15 +1411,33 @@ app.get("/environments", uuidAuth, async (c) => {
 // ── Suggest ──────────────────────────────────────────────────────────────────
 
 app.get("/suggest/files", uuidAuth, async (c) => {
+  const uuid = c.get("uuid")!;
   const q = c.req.query("q") || "";
-  const cwd = c.req.query("cwd") || process.cwd();
+  const resolved = resolveOwnedWorkspaceCwd({
+    uuid,
+    sessionId: c.req.query("sessionId"),
+    cwd: c.req.query("cwd"),
+  });
+  if (!resolved.ok) {
+    return c.json({ error: resolved.error }, resolved.status);
+  }
+  const cwd = resolved.cwd;
   const suggestions = await suggestFiles(q, cwd);
   return c.json({ suggestions });
 });
 
 app.get("/suggest/commands", uuidAuth, async (c) => {
+  const uuid = c.get("uuid")!;
   const q = c.req.query("q") || "";
-  const cwd = c.req.query("cwd") || process.cwd();
+  const resolved = resolveOwnedWorkspaceCwd({
+    uuid,
+    sessionId: c.req.query("sessionId"),
+    cwd: c.req.query("cwd"),
+  });
+  if (!resolved.ok) {
+    return c.json({ error: resolved.error }, resolved.status);
+  }
+  const cwd = resolved.cwd;
   const suggestions = await suggestCommands(q, cwd);
   return c.json({ suggestions });
 });
@@ -959,18 +1445,21 @@ app.get("/suggest/commands", uuidAuth, async (c) => {
 // ── Command execute ──────────────────────────────────────────────────────────
 
 import {
-  getCommand,
+  getCommandForWorkspace,
   getCommandPolicy,
   isCommandAvailable,
-  isExecutableAsWebNative,
-  WEB_NATIVE_COMMANDS,
+  isWebNativeCommand,
 } from "../../services/command/catalog";
-import type { CommandDefinition } from "../../services/command/catalog";
+import { executeWebNativeCommand } from "../../services/command/executor";
 
 app.post("/command/execute", uuidAuth, async (c) => {
   const body = await c.req.json();
   const command = body.command as string;
   const sessionId = body.sessionId as string | undefined;
+  const rawCwd = body.cwd as string | undefined;
+  const userMessageId =
+    normalizeOptionalString((body as Record<string, unknown>).userMessageId)
+    ?? crypto.randomUUID();
 
   if (!command) {
     return c.json({ error: "command is required" }, 400);
@@ -978,9 +1467,26 @@ app.post("/command/execute", uuidAuth, async (c) => {
 
   // Extract command name (strip leading slash and args)
   const commandName = command.replace(/^\//, "").split(/\s+/)[0].toLowerCase();
+  const isStatelessClear = !sessionId && commandName === "clear";
+
+  const uuid = c.get("uuid")!;
+  const lookupCwdInput = rawCwd ?? c.req.query("cwd") ?? null;
+  let lookupCwd: string | undefined;
+
+  if (!isStatelessClear && (sessionId || lookupCwdInput)) {
+    const resolvedLookup = resolveOwnedWorkspaceCwd({
+      uuid,
+      sessionId: sessionId ?? null,
+      cwd: lookupCwdInput,
+    });
+    if (!resolvedLookup.ok) {
+      return c.json({ error: resolvedLookup.error }, resolvedLookup.status);
+    }
+    lookupCwd = resolvedLookup.cwd;
+  }
 
   // Check if command exists in catalog
-  const cmd = getCommand(commandName);
+  const cmd = await getCommandForWorkspace(commandName, lookupCwd);
   if (!cmd) {
     return c.json({ error: `Unknown command: /${commandName}` }, 404);
   }
@@ -999,48 +1505,117 @@ app.post("/command/execute", uuidAuth, async (c) => {
     return c.json({ error: `Command /${commandName} is blocked by policy` }, 403);
   }
 
-  // Check workspace requirement
-  if (policy.requiresWorkspace && !sessionId) {
-    return c.json(
-      { error: `Command /${commandName} requires an active session` },
-      400,
-    );
+  if (cmd.name === "rewind" && !sessionId) {
+    c.status(409);
+    return c.json({ error: "/rewind requires an active session" });
   }
 
-  // Handle web-native commands (can execute without subprocess)
-  if (isExecutableAsWebNative(commandName) && sessionId) {
-    const uuid = c.get("uuid")!;
-    const resolvedId = resolveOwnedWebSessionId(sessionId, uuid);
-    if (resolvedId) {
-      return runWithSessionContext(resolvedId, uuid, () => {
-        publishSessionEvent(resolvedId, "user", { content: command }, "inbound");
+  if (isStatelessClear) {
+    return c.json({
+      success: true,
+      delegated: false,
+      executionMode: policy.executionMode,
+      webNative: true,
+      clearConversation: true,
+    });
+  }
+
+  const resolved = await ensureOwnedSessionWorkspace({
+    uuid,
+    sessionId: sessionId ?? null,
+    cwd: lookupCwdInput,
+  });
+  if (!resolved.ok) {
+    c.status(resolved.status as 400 | 403 | 404 | 500);
+    return c.json({ error: resolved.error });
+  }
+  const resolvedId = resolved.sessionId;
+  const effectiveCwd = resolved.cwd;
+
+  return runWithSessionContext(resolvedId, uuid, async () => {
+    if (cmd.name === "rewind") {
+      try {
+        const rewindResult = await rewindLatestTurnFiles(resolvedId, effectiveCwd);
         return c.json({
-          success: true,
-          delegated: true,
+          ...rewindResult,
+          delegated: false,
           executionMode: policy.executionMode,
           webNative: true,
+          sessionId: resolvedId,
+          refreshHistory: true,
         });
+      } catch (error) {
+        c.status(409);
+        return c.json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    publishSessionEvent(
+      resolvedId,
+      "user",
+      { content: command, uuid: userMessageId },
+      "inbound",
+    );
+
+    if (
+      cmd.name === "clear" ||
+      cmd.name === "cost" ||
+      cmd.name === "files" ||
+      cmd.name === "release-notes" ||
+      cmd.name === "provider"
+    ) {
+      const args = command.trim().replace(/^\/\S+/, "").trim();
+      const result = await executeWebNativeCommand(
+        cmd.name,
+        args ? args.split(/\s+/) : [],
+        resolvedId,
+      );
+      if (!result.success) {
+        return c.json(
+          { error: result.error ?? `Failed to execute command: /${commandName}` },
+          500,
+        );
+      }
+
+      return c.json({
+        success: true,
+        delegated: cmd.name !== "clear",
+        executionMode: policy.executionMode,
+        webNative: true,
+        sessionId: resolvedId,
+        ...(result.clearConversation ? { clearConversation: true } : {}),
       });
     }
-  }
 
-  // For prompt-type commands or when no session, delegate to subprocess
-  if (sessionId) {
-    const uuid = c.get("uuid")!;
-    const resolvedId = resolveOwnedWebSessionId(sessionId, uuid);
-    if (resolvedId) {
-      return runWithSessionContext(resolvedId, uuid, () => {
-        publishSessionEvent(resolvedId, "user", { content: command }, "inbound");
-        return c.json({
-          success: true,
-          delegated: true,
-          executionMode: policy.executionMode,
-        });
-      });
+    try {
+      await subprocessManager.getOrSpawn(resolvedId, effectiveCwd);
+      subprocessManager.enqueueMessage(
+        resolvedId,
+        JSON.stringify({
+          type: "user",
+          uuid: userMessageId,
+          message: {
+            role: "user",
+            content: command,
+          },
+        }),
+      );
+    } catch (err) {
+      logError("Failed to execute slash command", String(err));
+      return c.json(
+        { error: `Failed to execute command: ${String(err)}` },
+        500,
+      );
     }
-  }
 
-  return c.json({ success: false, error: "No active session" }, 400);
+    return c.json({
+      success: true,
+      delegated: true,
+      executionMode: policy.executionMode,
+      webNative: isWebNativeCommand(cmd),
+      sessionId: resolvedId,
+    });
+  });
 });
 
 // ── Context window breakdown ─────────────────────────────────────────────────
@@ -1172,21 +1747,82 @@ app.get("/history", uuidAuth, async (c) => {
   return c.json({ prompts: prompts.slice(0, limit) });
 });
 
+// ── Admin ────────────────────────────────────────────────────────────────────
+
+app.post("/admin/migrate-legacy-sessions", apiKeyAuth, async (c) => {
+  const sessions = storeListSessions();
+  let migrated = 0;
+  let skipped = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  for (const session of sessions) {
+    const existing = storeGetWorkspaceBySession(session.id);
+    if (existing && existing.strategy !== "same-dir") {
+      skipped++;
+      continue;
+    }
+
+    try {
+      const cwd = existing?.sourceRoot || existing?.workspacePath || session.cwd || process.cwd();
+      await ensureSessionWorkspace(session.id, {
+        cwd,
+        forceIsolation: true,
+      });
+      migrated++;
+    } catch (err) {
+      failed++;
+      errors.push(`${session.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return c.json({
+    success: true,
+    total: sessions.length,
+    migrated,
+    skipped,
+    failed,
+    ...(errors.length > 0 ? { errors: errors.slice(0, 50) } : {}),
+  });
+});
+
 // ── Rewind ───────────────────────────────────────────────────────────────────
 
-app.post("/sessions/:id/rewind", uuidAuth, withSessionContext("id", (c, sessionId) => {
-  publishSessionEvent(sessionId, "user", { content: "/rewind" }, "inbound");
-  return c.json({ success: true });
+app.post("/sessions/:id/rewind", uuidAuth, withSessionContext("id", async (c, sessionId, uuid) => {
+  const resolved = await ensureOwnedSessionWorkspace({
+    uuid,
+    sessionId,
+  });
+  if (!resolved.ok) {
+    c.status(resolved.status as 400 | 403 | 404 | 500);
+    return c.json({ error: resolved.error });
+  }
+
+  try {
+    return c.json(await rewindLatestTurnFiles(sessionId, resolved.cwd));
+  } catch (error) {
+    c.status(409);
+    return c.json({ error: error instanceof Error ? error.message : String(error) });
+  }
 }));
 
 // ── Workspace search (ripgrep) ──────────────────────────────────────────────
 
 app.get("/search", uuidAuth, async (c) => {
+  const uuid = c.get("uuid")!;
   const query = c.req.query("q") || "";
   const limit = Math.min(Number(c.req.query("limit") || "50"), 100);
   if (!query.trim()) return c.json({ results: [] });
 
-  const cwd = c.req.query("cwd") || process.cwd();
+  const resolved = resolveOwnedWorkspaceCwd({
+    uuid,
+    sessionId: c.req.query("sessionId"),
+    cwd: c.req.query("cwd"),
+  });
+  if (!resolved.ok) {
+    return c.json({ error: resolved.error }, resolved.status);
+  }
+  const cwd = resolved.cwd;
 
   const rgArgs = [
     "--json",
@@ -1254,10 +1890,16 @@ app.get("/search", uuidAuth, async (c) => {
 // ── MCP server management ────────────────────────────────────────────────────
 
 app.get("/mcp", uuidAuth, async (c) => {
-  // Return list of configured MCP servers from settings
-  // Accept cwd as query param so the web client can pass the project root,
-  // but fall back to process.cwd() for standalone use
-  const cwd = c.req.query("cwd") || process.cwd();
+  const uuid = c.get("uuid")!;
+  const resolved = resolveOwnedWorkspaceCwd({
+    uuid,
+    sessionId: c.req.query("sessionId"),
+    cwd: c.req.query("cwd"),
+  });
+  if (!resolved.ok) {
+    return c.json({ error: resolved.error }, resolved.status);
+  }
+  const cwd = resolved.cwd;
   try {
     const { readFileSync, existsSync } = await import("fs");
     const { join } = await import("path");
@@ -1281,20 +1923,30 @@ app.get("/mcp", uuidAuth, async (c) => {
 });
 
 app.post("/mcp", uuidAuth, async (c) => {
+  const uuid = c.get("uuid")!;
   const body = await c.req.json();
-  const { name, command, args, env, cwd: rawCwd } = body as {
+  const { name, command, args, env, cwd: rawCwd, sessionId } = body as {
     name?: string;
     command?: string;
     args?: string[];
     env?: Record<string, string>;
     cwd?: string;
+    sessionId?: string;
   };
 
   if (!name || !command) {
     return c.json({ error: "name and command are required" }, 400);
   }
 
-  const cwd = rawCwd || process.cwd();
+  const resolved = resolveOwnedWorkspaceCwd({
+    uuid,
+    sessionId,
+    cwd: rawCwd,
+  });
+  if (!resolved.ok) {
+    return c.json({ error: resolved.error }, resolved.status);
+  }
+  const cwd = resolved.cwd;
   try {
     const { readFileSync, writeFileSync, mkdirSync, existsSync } = await import("fs");
     const { join } = await import("path");
@@ -1318,11 +1970,18 @@ app.post("/mcp", uuidAuth, async (c) => {
 });
 
 app.delete("/mcp/:name", uuidAuth, async (c) => {
+  const uuid = c.get("uuid")!;
   const name = c.req.param("name");
-  // Accept cwd as query param so the web client can pass the project root,
-  // but fall back to process.cwd() for standalone use
-  const cwd = c.req.query("cwd") || process.cwd();
-    try {
+  const resolved = resolveOwnedWorkspaceCwd({
+    uuid,
+    sessionId: c.req.query("sessionId"),
+    cwd: c.req.query("cwd"),
+  });
+  if (!resolved.ok) {
+    return c.json({ error: resolved.error }, resolved.status);
+  }
+  const cwd = resolved.cwd;
+  try {
     const { readFileSync, writeFileSync, existsSync } = await import("fs");
     const { join } = await import("path");
     const settingsPath = join(cwd, ".claude", "settings.json");
@@ -1347,7 +2006,16 @@ app.get("/memory", uuidAuth, async (c) => {
   try {
     const { readFileSync, existsSync, readdirSync } = await import("fs");
     const { join } = await import("path");
-    const cwd = c.req.query("cwd") || process.cwd();
+    const uuid = c.get("uuid")!;
+    const resolved = resolveOwnedWorkspaceCwd({
+      uuid,
+      sessionId: c.req.query("sessionId"),
+      cwd: c.req.query("cwd"),
+    });
+    if (!resolved.ok) {
+      return c.json({ error: resolved.error }, resolved.status);
+    }
+    const cwd = resolved.cwd;
 
     const files: Array<{ path: string; content: string }> = [];
 
@@ -1384,11 +2052,13 @@ app.get("/memory", uuidAuth, async (c) => {
 });
 
 app.put("/memory", uuidAuth, async (c) => {
+  const uuid = c.get("uuid")!;
   const body = await c.req.json();
-  const { path: relativePath, content, cwd: rawCwd } = body as {
+  const { path: relativePath, content, cwd: rawCwd, sessionId } = body as {
     path?: string;
     content?: string;
     cwd?: string;
+    sessionId?: string;
   };
 
   if (!relativePath || content === undefined) {
@@ -1405,7 +2075,15 @@ app.put("/memory", uuidAuth, async (c) => {
   try {
     const { writeFileSync, mkdirSync } = await import("fs");
     const { join, dirname } = await import("path");
-    const cwd = rawCwd || process.cwd();
+    const resolved = resolveOwnedWorkspaceCwd({
+      uuid,
+      sessionId,
+      cwd: rawCwd,
+    });
+    if (!resolved.ok) {
+      return c.json({ error: resolved.error }, resolved.status);
+    }
+    const cwd = resolved.cwd;
     const fullPath = join(cwd, relativePath);
 
     mkdirSync(dirname(fullPath), { recursive: true });

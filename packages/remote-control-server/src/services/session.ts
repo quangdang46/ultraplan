@@ -36,6 +36,7 @@ function toResponse(row: { id: string; environmentId: string | null; title: stri
     created_at: row.createdAt.getTime() / 1000,
     updated_at: row.updatedAt.getTime() / 1000,
     cwd: workspace?.workspacePath || workspace?.sourceRoot || null,
+    branch: workspace?.branch ?? null,
   };
 }
 

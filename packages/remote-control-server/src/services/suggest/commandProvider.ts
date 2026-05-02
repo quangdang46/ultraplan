@@ -1,36 +1,107 @@
-// Standalone command suggestions for RCS (no CLI dependency)
+// Standalone command suggestions for RCS.
+// Uses the shared command catalog so custom workspace commands, CLI-backed
+// commands, aliases, and argument hints stay aligned with the CLI.
 
 import type { CommandSuggestion } from "./types.js";
-import { STATIC_COMMAND_CATALOG, isCommandAvailable } from "../command/catalog.js";
+import {
+  getVisibleCommandsForWorkspace,
+  type CommandCatalogEntry,
+} from "../command/catalog.js";
 
-export async function suggestCommandsByQuery(query: string, _rootDir: string): Promise<CommandSuggestion[]> {
-  const normalizedQuery = query.trim().toLowerCase();
+type SuggestionCandidate = CommandSuggestion;
 
-  const allCommands = STATIC_COMMAND_CATALOG
-    .filter((cmd) => !cmd.isHidden)
-    .filter((cmd) => isCommandAvailable(cmd))
-    .map((cmd) => ({
-      name: `/${cmd.name}`,
-      description: cmd.description,
-    }));
+function toSuggestion(
+  name: string,
+  cmd: CommandCatalogEntry,
+  description = cmd.description,
+): SuggestionCandidate {
+  return {
+    name,
+    description,
+    argumentHint: cmd.argumentHint,
+  };
+}
 
-  if (!normalizedQuery) {
-    return allCommands.sort((a, b) => a.name.localeCompare(b.name));
+function toAliasSuggestion(
+  alias: string,
+  cmd: CommandCatalogEntry,
+): SuggestionCandidate {
+  return {
+    name: alias,
+    description: `Alias for /${cmd.name}. ${cmd.description}`,
+    argumentHint: cmd.argumentHint,
+  };
+}
+
+function filterAndSortSuggestions(
+  items: SuggestionCandidate[],
+  normalizedQuery: string,
+): CommandSuggestion[] {
+  const deduped = new Map<string, SuggestionCandidate>();
+  for (const item of items) {
+    const key = item.name.toLowerCase();
+    if (!deduped.has(key)) {
+      deduped.set(key, item);
+    }
   }
 
-  return allCommands
-    .filter(
-      (cmd) =>
-        cmd.name.toLowerCase().includes(normalizedQuery) ||
-        cmd.description.toLowerCase().includes(normalizedQuery),
-    )
+  return [...deduped.values()]
+    .filter((item) => {
+      if (!normalizedQuery) {
+        return true;
+      }
+
+      return (
+        item.name.toLowerCase().includes(normalizedQuery) ||
+        item.description.toLowerCase().includes(normalizedQuery)
+      );
+    })
     .sort((a, b) => {
       const aName = a.name.toLowerCase();
       const bName = b.name.toLowerCase();
-      if (aName === normalizedQuery) return -1;
-      if (bName === normalizedQuery) return 1;
-      if (aName.startsWith(normalizedQuery) && !bName.startsWith(normalizedQuery)) return -1;
-      if (!aName.startsWith(normalizedQuery) && bName.startsWith(normalizedQuery)) return 1;
+      const aExact = aName === normalizedQuery;
+      const bExact = bName === normalizedQuery;
+
+      if (aExact !== bExact) {
+        return aExact ? -1 : 1;
+      }
+
+      const aPrefix = aName.startsWith(normalizedQuery);
+      const bPrefix = bName.startsWith(normalizedQuery);
+      if (aPrefix !== bPrefix) {
+        return aPrefix ? -1 : 1;
+      }
+
       return aName.localeCompare(bName);
-    });
+    })
+    .map(({ name, description, argumentHint }) => ({
+      name,
+      description,
+      argumentHint,
+    }));
+}
+
+export async function suggestCommandsByQuery(
+  query: string,
+  rootDir: string,
+): Promise<CommandSuggestion[]> {
+  const normalizedQuery = query.trim().replace(/^\//, "").toLowerCase();
+  const visibleCommands = await getVisibleCommandsForWorkspace(rootDir, false);
+
+  const suggestions: SuggestionCandidate[] = visibleCommands.map((cmd) =>
+    toSuggestion(cmd.name, cmd),
+  );
+
+  if (normalizedQuery) {
+    suggestions.push(
+      ...visibleCommands.flatMap((cmd) =>
+        (cmd.aliases ?? [])
+          .filter((alias) => alias !== cmd.name)
+          .filter((alias) => alias.toLowerCase().includes(normalizedQuery))
+          .map((alias) => toAliasSuggestion(alias, cmd)),
+      ),
+    );
+  }
+
+  return filterAndSortSuggestions(suggestions, normalizedQuery);
 }

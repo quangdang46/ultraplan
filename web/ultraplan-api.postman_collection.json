@@ -1,0 +1,487 @@
+{
+  "info": {
+    "name": "Ultraplan RCS API",
+    "description": "Comprehensive Postman collection for the Ultraplan Remote Control Server API. Base URL: {{baseUrl}} (default: http://localhost:8080). Set the `bearerToken` variable after calling /api/auth/verify.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "bearerToken",
+      "value": "",
+      "type": "string",
+      "description": "Set after /api/auth/verify"
+    },
+    {
+      "key": "sessionId",
+      "value": "",
+      "type": "string",
+      "description": "Set after creating a session"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{bearerToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Init (get temp token)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/auth/init",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Get a temporary token. Returns { tempToken, expiresAt }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.tempToken) {",
+                  "  pm.collectionVariables.set('bearerToken', r.tempToken);",
+                  "  console.log('Temp token saved:', r.tempToken);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify (exchange temp token for API key)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/verify",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"tempToken\": \"{{bearerToken}}\" }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Exchange temp token for a persistent API key. Returns { apiKey, expiresAt }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.apiKey) {",
+                  "  pm.collectionVariables.set('bearerToken', r.apiKey);",
+                  "  console.log('API key saved:', r.apiKey);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validate (check token validity)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/auth/validate",
+            "description": "Returns { valid: boolean }."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sessions",
+      "item": [
+        {
+          "name": "List sessions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/sessions",
+            "description": "Returns { sessions: [...] } — all sessions owned by the authenticated user."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.sessions && r.sessions.length > 0) {",
+                  "  pm.collectionVariables.set('sessionId', r.sessions[0].id);",
+                  "  console.log('Session ID saved:', r.sessions[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create session",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/sessions",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"cwd\": \"/tmp\" }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Create a new Claude session. Returns { session }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.session && r.session.id) {",
+                  "  pm.collectionVariables.set('sessionId', r.session.id);",
+                  "  console.log('Session ID saved:', r.session.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get session",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/sessions/{{sessionId}}",
+            "description": "Get details of a specific session."
+          }
+        },
+        {
+          "name": "Rename session",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/sessions/{{sessionId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"name\": \"My Session\" }",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Kill session",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/sessions/{{sessionId}}",
+            "description": "Terminate a session."
+          }
+        },
+        {
+          "name": "Get session messages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/sessions/{{sessionId}}/messages",
+            "description": "Returns { messages: [...] } — the conversation transcript."
+          }
+        },
+        {
+          "name": "Session SSE stream",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "text/event-stream" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/{{sessionId}}/stream?from=0",
+              "query": [{ "key": "from", "value": "0", "description": "Start from sequence number" }]
+            },
+            "description": "SSE stream of all events for a session. Events: message_start, content_delta, thinking_delta, tool_start, tool_result, permission_request, message_end, etc."
+          }
+        },
+        {
+          "name": "Rewind last turn",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/sessions/{{sessionId}}/rewind",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Undo the last user+assistant turn by sending /rewind to the session."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chat",
+      "item": [
+        {
+          "name": "Send message (SSE stream)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "text/event-stream" }
+            ],
+            "url": "{{baseUrl}}/api/chat/stream",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Hello Claude!\",\n  \"sessionId\": \"{{sessionId}}\",\n  \"quote\": null\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Send a message and stream the response as SSE. Events: { type, data } format."
+          }
+        },
+        {
+          "name": "Permission response (approve/deny tool)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/chat/control",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sessionId\": \"{{sessionId}}\",\n  \"request_id\": \"req_abc123\",\n  \"approved\": true,\n  \"updatedInput\": null\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Respond to a tool permission request."
+          }
+        },
+        {
+          "name": "Interrupt session",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/chat/interrupt",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"sessionId\": \"{{sessionId}}\" }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Interrupt the current Claude stream."
+          }
+        }
+      ]
+    },
+    {
+      "name": "State & Tools",
+      "item": [
+        {
+          "name": "Get state",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/state",
+            "description": "Returns current agent state: { permissionMode, model, tokenUsage, cwd, gitBranch, connected, ... }"
+          }
+        },
+        {
+          "name": "Update state (model / permissionMode)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/state",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-5\",\n  \"permissionMode\": \"default\",\n  \"thinkingEffort\": \"medium\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "List tools",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/tools",
+            "description": "Returns { tools: [...] } — list of registered tools with name, description, category."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Suggestions & Commands",
+      "item": [
+        {
+          "name": "File suggestions (@mention)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/suggest/files?q=src",
+              "query": [
+                { "key": "q", "value": "src", "description": "Partial filename to match" },
+                { "key": "cwd", "value": "", "description": "Optional working directory", "disabled": true }
+              ]
+            },
+            "description": "Returns file suggestions for @mention autocomplete."
+          }
+        },
+        {
+          "name": "Command suggestions (/slash)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/suggest/commands?q=comp",
+              "query": [
+                { "key": "q", "value": "comp", "description": "Partial command to match" }
+              ]
+            },
+            "description": "Returns slash command suggestions: /compact, /model, /export, /help, /clear, /memory, /mcp, /doctor, /rewind."
+          }
+        },
+        {
+          "name": "Execute slash command",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/command/execute",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"command\": \"/compact\",\n  \"sessionId\": \"{{sessionId}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Execute a slash command. Delegates to the active session."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Context & Usage",
+      "item": [
+        {
+          "name": "Context window breakdown",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/context?sessionId={{sessionId}}",
+              "query": [{ "key": "sessionId", "value": "{{sessionId}}" }]
+            },
+            "description": "Returns token breakdown: { maxTokens, totalInput, totalOutput, breakdown: [{ category, tokens, pct }], usedPct }"
+          }
+        },
+        {
+          "name": "Usage & cost",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/usage",
+            "description": "Returns { totalInput, totalOutput, cost: { input, output, total }, rateLimit: { sessionLimit, sessionUsed, sessionPct, resetAt } }"
+          }
+        }
+      ]
+    },
+    {
+      "name": "History & Search",
+      "item": [
+        {
+          "name": "Prompt history",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/history?limit=50",
+              "query": [{ "key": "limit", "value": "50", "description": "Max prompts to return" }]
+            },
+            "description": "Returns { prompts: [{ text, sessionId, timestamp }] } sorted newest first."
+          }
+        },
+        {
+          "name": "Workspace search (ripgrep)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/search?q=useState&limit=50",
+              "query": [
+                { "key": "q", "value": "useState", "description": "Search query (ripgrep pattern)" },
+                { "key": "limit", "value": "50", "description": "Max results" }
+              ]
+            },
+            "description": "Returns { results: [{ file, line, col, text, matchStart, matchEnd }] } using ripgrep."
+          }
+        }
+      ]
+    },
+    {
+      "name": "MCP Servers",
+      "item": [
+        {
+          "name": "List MCP servers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/mcp",
+            "description": "Returns { servers: [{ name, command, args, env, status }] } from .claude/settings.json"
+          }
+        },
+        {
+          "name": "Add MCP server",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"filesystem\",\n  \"command\": \"npx\",\n  \"args\": [\"@modelcontextprotocol/server-filesystem\", \"/tmp\"],\n  \"env\": {}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Add a new MCP server to .claude/settings.json. Requires name and command."
+          }
+        },
+        {
+          "name": "Delete MCP server",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/mcp/filesystem",
+            "description": "Remove an MCP server by name. Replace 'filesystem' with the server name."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Memory Files",
+      "item": [
+        {
+          "name": "List memory files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/memory",
+            "description": "Returns { files: [{ path, content }] } — CLAUDE.md files from cwd and .claude/ directory."
+          }
+        },
+        {
+          "name": "Save memory file",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/memory",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"path\": \"CLAUDE.md\",\n  \"content\": \"# Project Memory\\n\\nThis is my project's memory file.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Write content to a memory file. Allowed paths: CLAUDE.md, .claude/CLAUDE.md, .claude/commands/*.md"
+          }
+        }
+      ]
+    }
+  ]
+}

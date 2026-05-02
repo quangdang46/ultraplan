@@ -13,6 +13,7 @@ interface SearchResult {
 
 type Props = {
   cwd?: string | null;
+  sessionId?: string | null;
   onSelect?: (ref: string) => void;
   onClose: () => void;
 };
@@ -40,7 +41,7 @@ function HighlightLine({
   );
 }
 
-export function SearchDialog({ cwd, onSelect, onClose }: Props) {
+export function SearchDialog({ cwd, sessionId, onSelect, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -67,7 +68,12 @@ export function SearchDialog({ cwd, onSelect, onClose }: Props) {
       setError(null);
         try {
           const client = getApiClient();
-          const data = await client.searchWorkspace(q, 50, cwd ?? undefined);
+          const data = await client.searchWorkspace(
+            q,
+            50,
+            cwd ?? undefined,
+            sessionId ?? undefined,
+          );
           if (!cancelled) setResults(data.results ?? []);
       } catch (err) {
         if (!cancelled) {
@@ -82,7 +88,7 @@ export function SearchDialog({ cwd, onSelect, onClose }: Props) {
       cancelled = true;
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [cwd, query]);
+  }, [cwd, query, sessionId]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") onClose();

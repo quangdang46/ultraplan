@@ -12,10 +12,11 @@ interface McpServer {
 
 type Props = {
   cwd?: string | null;
+  sessionId?: string | null;
   onClose: () => void;
 };
 
-export function McpManagerDialog({ cwd: initialCwd, onClose }: Props) {
+export function McpManagerDialog({ cwd: initialCwd, sessionId, onClose }: Props) {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
@@ -24,11 +25,11 @@ export function McpManagerDialog({ cwd: initialCwd, onClose }: Props) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [cwd, setCwd] = useState<string | null>(null);
 
-  const load = async (projectCwd: string) => {
+  const load = async (projectCwd?: string | null) => {
     setLoading(true);
     try {
       const client = getApiClient();
-      const data = await client.getMcpServers(projectCwd);
+      const data = await client.getMcpServers(projectCwd ?? undefined, sessionId ?? undefined);
       setServers(data.servers);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load servers");
@@ -47,13 +48,13 @@ export function McpManagerDialog({ cwd: initialCwd, onClose }: Props) {
     // Fetch the project cwd from the state endpoint when the active session
     // did not already provide one.
     const client = getApiClient();
-    void client.getState().then((state) => {
+    void client.getState(sessionId ?? undefined).then((state) => {
       setCwd(state.cwd);
       void load(state.cwd);
     }).catch(() => {
       setLoading(false);
     });
-  }, [initialCwd]);
+  }, [initialCwd, sessionId]);
 
   const handleAdd = async () => {
     if (!cwd) return;
@@ -76,7 +77,14 @@ export function McpManagerDialog({ cwd: initialCwd, onClose }: Props) {
     }
 
     try {
-      await getApiClient().addMcpServer(form.name.trim(), form.command.trim(), cwd, args, env);
+      await getApiClient().addMcpServer(
+        form.name.trim(),
+        form.command.trim(),
+        cwd ?? undefined,
+        args,
+        env,
+        sessionId ?? undefined,
+      );
       setForm({ name: "", command: "", args: "", env: "" });
       setAdding(false);
       await load(cwd);
@@ -88,7 +96,7 @@ export function McpManagerDialog({ cwd: initialCwd, onClose }: Props) {
   const handleDelete = async (name: string) => {
     if (!cwd) return;
     try {
-      await getApiClient().deleteMcpServer(name, cwd);
+      await getApiClient().deleteMcpServer(name, cwd ?? undefined, sessionId ?? undefined);
       await load(cwd);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete server");

@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { getEventBus } from "../transport/event-bus";
+import { getEventBus, removeEventBus } from "../transport/event-bus";
 import { db } from "../db";
-import { storeAddPendingPermission, storeRemovePendingPermission } from "../store";
+import {
+  storeAddPendingPermission,
+  storeClearPendingPermissions,
+  storeClearSessionRequiresAction,
+  storeRemovePendingPermission,
+} from "../store";
 import {
   buildCanonicalSessionEvent,
   type CanonicalSessionEvent,
@@ -241,4 +246,63 @@ export function hydrateEventBusFromPersistence(sessionId: string, sinceSeqNum = 
       createdAt: event.createdAt,
     });
   }
+}
+
+export function truncateSessionEvents(
+  sessionId: string,
+  lastSeqNumToKeep: number,
+): void {
+  const keepSeqNum = Math.max(0, Math.trunc(lastSeqNumToKeep));
+  db.prepare(
+    `DELETE FROM events
+     WHERE session_id = ? AND seq_num > ?`,
+  ).run(sessionId, keepSeqNum);
+  storeClearPendingPermissions(sessionId);
+  storeClearSessionRequiresAction(sessionId);
+  removeEventBus(sessionId);
+}
+
+const FORK_EXCLUDED_EVENT_TYPES = new Set<SessionEventType>([
+  "session_created",
+  "session_ended",
+  "session_status",
+  "permission_request",
+  "permission_response",
+  "interrupt",
+]);
+
+function clonePayloadForFork<T>(payload: T): T {
+  if (payload === undefined) {
+    return payload;
+  }
+  const cloned = JSON.parse(JSON.stringify(payload)) as T;
+  if (cloned && typeof cloned === "object") {
+    delete (cloned as Record<string, unknown>).seq;
+    delete (cloned as Record<string, unknown>).seqNum;
+  }
+  return cloned;
+}
+
+export function clonePersistedSessionEvents(
+  sourceSessionId: string,
+  targetSessionId: string,
+): number {
+  const events = loadPersistedEvents(sourceSessionId, 0);
+  let copied = 0;
+
+  for (const event of events) {
+    if (FORK_EXCLUDED_EVENT_TYPES.has(event.type)) {
+      continue;
+    }
+
+    publishSessionEvent(
+      targetSessionId,
+      event.type,
+      clonePayloadForFork(event.payload),
+      event.direction,
+    );
+    copied += 1;
+  }
+
+  return copied;
 }

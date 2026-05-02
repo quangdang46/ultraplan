@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { log } from "./logger";
+import { runWorkspaceLifecycleMigration } from "./migrations/001_workspace_lifecycle";
+import { runSessionWorkspaceBindingMigration } from "./migrations/002_session_workspace_binding";
 
 const DB_PATH = process.env.DATABASE_URL || join(process.cwd(), "rcs.sqlite");
 
@@ -54,6 +56,7 @@ export function initDb() {
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       environment_id TEXT,
+      workspace_id TEXT,
       title TEXT,
       status TEXT DEFAULT 'idle',
       source TEXT DEFAULT 'remote-control',
@@ -76,6 +79,9 @@ export function initDb() {
       strategy TEXT NOT NULL,
       workspace_path TEXT NOT NULL,
       cleanup_policy TEXT NOT NULL DEFAULT 'keep',
+      lifecycle_policy TEXT,
+      materialization_strategy TEXT,
+      parent_workspace_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
@@ -131,6 +137,7 @@ export function initDb() {
       payload TEXT NOT NULL, -- JSON
       direction TEXT NOT NULL, -- 'inbound' | 'outbound'
       seq_num INTEGER NOT NULL,
+      after_seq INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
@@ -154,19 +161,43 @@ export function initDb() {
 
     CREATE INDEX IF NOT EXISTS idx_pending_permissions_session ON pending_permissions(session_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_permissions_session_request ON pending_permissions(session_id, request_id);
+
+    CREATE TABLE IF NOT EXISTS workspace_repo_membership (
+      workspace_id TEXT NOT NULL,
+      repo_root TEXT NOT NULL,
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (workspace_id, repo_root),
+      FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_wrm_workspace ON workspace_repo_membership(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_wrm_repo_root ON workspace_repo_membership(repo_root);
   `);
+
+  runMigrations();
 
   return db;
 }
 
-export async function runMigrations() {
-  try {
-    await import("./migrations/001_workspace_lifecycle");
-    await import("./migrations/002_session_workspace_binding");
-  } catch (err) {
-    log(`[DB] Migration error: ${err}`);
+export function runMigrations() {
+  const migrations = [
+    {
+      name: "001_workspace_lifecycle",
+      run: runWorkspaceLifecycleMigration,
+    },
+    {
+      name: "002_session_workspace_binding",
+      run: runSessionWorkspaceBindingMigration,
+    },
+  ];
+
+  for (const migration of migrations) {
+    try {
+      migration.run();
+    } catch (err) {
+      log(`[DB] Migration ${migration.name} error: ${err}`);
+    }
   }
 }
 
 initDb();
-void runMigrations();

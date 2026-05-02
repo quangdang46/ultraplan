@@ -14,6 +14,7 @@ import {
   storeGetSessionState,
 } from "../store";
 import { forkSession, forkSessionWorkspace } from "../services/session-fork";
+import { loadPersistedEvents, publishSessionEvent } from "../services/transport";
 
 mock.module("../config", () => ({
   config: {
@@ -30,6 +31,33 @@ mock.module("../config", () => ({
     wsKeepaliveInterval: 20,
   },
   getBaseUrl: () => "http://localhost:3000",
+  resolveManagedSessionPaths: (sessionId: string, materializationStrategy = "worktree") => {
+    const root = "/tmp/rcs-test-workspace";
+    const workspacePath =
+      materializationStrategy === "workdir"
+        ? `${root}/workdirs/${sessionId}`
+        : `${root}/worktrees/${sessionId}`;
+    return {
+      sessionId,
+      sessionSlug: sessionId,
+      root,
+      sessionsRoot: `${root}/sessions`,
+      worktreesRoot: `${root}/worktrees`,
+      workdirsRoot: `${root}/workdirs`,
+      indexDbPath: `${root}/index.sqlite`,
+      sessionRoot: `${root}/sessions/${sessionId}`,
+      sessionJsonPath: `${root}/sessions/${sessionId}/session.json`,
+      stateJsonPath: `${root}/sessions/${sessionId}/state.json`,
+      workerJsonPath: `${root}/sessions/${sessionId}/worker.json`,
+      transcriptPath: `${root}/sessions/${sessionId}/transcript.ndjson`,
+      logsRoot: `${root}/sessions/${sessionId}/logs`,
+      eventsRoot: `${root}/sessions/${sessionId}/events`,
+      worktreePath: `${root}/worktrees/${sessionId}`,
+      workdirPath: `${root}/workdirs/${sessionId}`,
+      workspacePath,
+      materializationStrategy,
+    };
+  },
 }));
 
 describe("session-fork", () => {
@@ -75,6 +103,24 @@ describe("session-fork", () => {
         permissionMode: "plan",
         selectedRepos: ["repo-a"],
       });
+      publishSessionEvent(
+        sourceSession.id,
+        "user",
+        { content: "Explain the repo layout" },
+        "inbound",
+      );
+      publishSessionEvent(
+        sourceSession.id,
+        "content_delta",
+        { delta: { type: "text_delta", text: "Here is the layout." } },
+        "outbound",
+      );
+      publishSessionEvent(
+        sourceSession.id,
+        "message_end",
+        { id: "msg_1", usage: { inputTokens: 1, outputTokens: 1 } },
+        "outbound",
+      );
 
       const result = await forkSession(sourceSession.id);
       expect(result.success).toBe(true);
@@ -92,6 +138,16 @@ describe("session-fork", () => {
       expect(newSessionState).not.toBeNull();
       expect(newSessionState?.model).toBe("claude-opus-4-5");
       expect(newSessionState?.selectedRepos).toEqual(["repo-a"]);
+
+      const forkedEvents = loadPersistedEvents(result.newSessionId!, 0);
+      expect(
+        forkedEvents.some(
+          (event) =>
+            event.type === "user" &&
+            (event.payload as Record<string, unknown>).content === "Explain the repo layout",
+        ),
+      ).toBe(true);
+      expect(forkedEvents.some((event) => event.type === "content_delta")).toBe(true);
     });
 
     test("fork with custom title", async () => {

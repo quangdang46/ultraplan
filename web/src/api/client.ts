@@ -26,7 +26,8 @@ function getDefaultBaseUrl(): string {
   }
 
   if (typeof window === 'undefined') {
-    return 'http://localhost:8080';
+    // Use same origin for API calls (works in dev and production behind RCS)
+    return (typeof window !== "undefined" ? window.location.origin : "http://localhost:8080");
   }
 
   if (import.meta.env.DEV) {
@@ -48,6 +49,19 @@ export class ApiClientError extends Error {
     this.code = code;
     this.authDomain = authDomain;
   }
+}
+
+export interface SessionHistoryResponse {
+  messages: SessionMessage[];
+  lastSeqNum: number;
+}
+
+export interface RewindSessionResponse {
+  success: boolean;
+  userMessageId?: string;
+  filesChanged?: string[];
+  insertions?: number;
+  deletions?: number;
 }
 
 class ApiClient {
@@ -202,7 +216,11 @@ class ApiClient {
               // RCS SSE sends { type, payload, direction, seqNum }
               // ServerEvent expects { type, data }
               const data = parsed.data ?? parsed.payload ?? parsed;
-              const event: ServerEvent = { type: eventType, data };
+              const event: ServerEvent & { seqNum?: number } = { type: eventType, data };
+              const seqNum = Number(parsed.seqNum ?? parsed.seq_num);
+              if (Number.isFinite(seqNum) && seqNum > 0) {
+                event.seqNum = seqNum;
+              }
               console.log("[streamChat] Yielding event:", eventType, data);
               yield event;
             } catch (err) {
@@ -287,7 +305,7 @@ class ApiClient {
               const eventType = (parsed.type || currentEventType) as ServerEvent['type'];
               const data = parsed.data ?? parsed.payload ?? parsed;
               const event: ServerEvent & { seqNum?: number } = { type: eventType, data };
-              const seqNum = Number(currentEventId);
+              const seqNum = Number(parsed.seqNum ?? parsed.seq_num ?? currentEventId);
               if (Number.isFinite(seqNum) && seqNum > 0) {
                 event.seqNum = seqNum;
               }
@@ -334,10 +352,21 @@ class ApiClient {
     return this.request<SessionsResponse>('/api/sessions');
   }
 
+  async getSessionHistory(sessionId: string): Promise<SessionHistoryResponse> {
+    const response = await this.request<
+      { messages: SessionMessage[]; lastSeqNum?: number }
+    >(`/api/sessions/${sessionId}/messages`);
+    return {
+      messages: response.messages,
+      lastSeqNum:
+        typeof response.lastSeqNum === 'number' && response.lastSeqNum > 0
+          ? response.lastSeqNum
+          : 0,
+    };
+  }
+
   async getSessionMessages(sessionId: string): Promise<SessionMessage[]> {
-    return this.request<{ messages: SessionMessage[] }>(
-      `/api/sessions/${sessionId}/messages`
-    ).then((r) => r.messages);
+    return this.getSessionHistory(sessionId).then((r) => r.messages);
   }
 
   async getSession(sessionId: string): Promise<Session> {
@@ -350,6 +379,13 @@ class ApiClient {
     return this.request<{ session: Session }>('/api/sessions', {
       method: 'POST',
       body: cwd ? JSON.stringify({ cwd }) : '{}',
+    }).then((r) => r.session);
+  }
+
+  async forkSession(sessionId: string): Promise<Session> {
+    return this.request<{ session: Session }>(`/api/sessions/${sessionId}/fork`, {
+      method: 'POST',
+      body: '{}',
     }).then((r) => r.session);
   }
 
@@ -392,18 +428,20 @@ class ApiClient {
     });
   }
 
-  async suggestFiles(query: string, cwd?: string): Promise<FileSuggestionsResponse> {
+  async suggestFiles(query: string, cwd?: string, sessionId?: string): Promise<FileSuggestionsResponse> {
     const params = new URLSearchParams({ q: query });
     if (cwd) params.set('cwd', cwd);
+    if (sessionId) params.set('sessionId', sessionId);
     const response = await this.request<
       FileSuggestionsResponse | { suggestions: FileSuggestionsResponse }
     >(`/api/suggest/files?${params.toString()}`);
     return 'suggestions' in response ? response.suggestions : response;
   }
 
-  async suggestCommands(query: string, cwd?: string): Promise<CommandSuggestionsResponse> {
+  async suggestCommands(query: string, cwd?: string, sessionId?: string): Promise<CommandSuggestionsResponse> {
     const params = new URLSearchParams({ q: query });
     if (cwd) params.set('cwd', cwd);
+    if (sessionId) params.set('sessionId', sessionId);
     const response = await this.request<
       CommandSuggestionsResponse | { suggestions: CommandSuggestionsResponse['items'] }
     >(`/api/suggest/commands?${params.toString()}`);
@@ -413,8 +451,17 @@ class ApiClient {
     return response;
   }
 
-  async executeCommand(command: string, cwd?: string): Promise<ExecuteCommandResponse> {
-    const payload: ExecuteCommandRequest = { command };
+  async executeCommand(
+    command: string,
+    cwd?: string,
+    sessionId?: string,
+    userMessageId?: string,
+  ): Promise<ExecuteCommandResponse> {
+    const payload: ExecuteCommandRequest = {
+      command,
+      ...(sessionId ? { sessionId } : {}),
+      ...(userMessageId ? { userMessageId } : {}),
+    };
     const params = new URLSearchParams();
     if (cwd) params.set('cwd', cwd);
     const query = params.toString();
@@ -466,7 +513,7 @@ class ApiClient {
   }
 
   // Workspace search
-  async searchWorkspace(query: string, limit?: number, cwd?: string): Promise<{
+  async searchWorkspace(query: string, limit?: number, cwd?: string, sessionId?: string): Promise<{
     results: Array<{
       file: string;
       line: number;
@@ -479,12 +526,13 @@ class ApiClient {
     const params = new URLSearchParams({ q: query });
     if (limit) params.set('limit', String(limit));
     if (cwd) params.set('cwd', cwd);
+    if (sessionId) params.set('sessionId', sessionId);
     return this.request(`/api/search?${params.toString()}`);
   }
 
   // Rewind last turn
-  async rewindSession(sessionId: string): Promise<void> {
-    await this.request<{ success: boolean }>(`/api/sessions/${sessionId}/rewind`, {
+  async rewindSession(sessionId: string): Promise<RewindSessionResponse> {
+    return this.request<RewindSessionResponse>(`/api/sessions/${sessionId}/rewind`, {
       method: 'POST',
       body: '{}',
     });
@@ -498,7 +546,7 @@ class ApiClient {
   }
 
   // MCP server management
-  async getMcpServers(cwd?: string): Promise<{
+  async getMcpServers(cwd?: string, sessionId?: string): Promise<{
     servers: Array<{
       name: string;
       command: string;
@@ -507,35 +555,69 @@ class ApiClient {
       status: string;
     }>;
   }> {
-    const params = cwd ? `?cwd=${encodeURIComponent(cwd)}` : '';
-    return this.request(`/api/mcp${params}`);
+    const params = new URLSearchParams();
+    if (cwd) params.set('cwd', cwd);
+    if (sessionId) params.set('sessionId', sessionId);
+    const query = params.toString();
+    const url = query ? `/api/mcp?${query}` : '/api/mcp';
+    return this.request(url);
   }
 
-  async addMcpServer(name: string, command: string, cwd: string, args?: string[], env?: Record<string, string>): Promise<void> {
+  async addMcpServer(
+    name: string,
+    command: string,
+    cwd: string | undefined,
+    args?: string[],
+    env?: Record<string, string>,
+    sessionId?: string,
+  ): Promise<void> {
     await this.request('/api/mcp', {
       method: 'POST',
-      body: JSON.stringify({ name, command, cwd, args: args ?? [], env: env ?? {} }),
+      body: JSON.stringify({
+        name,
+        command,
+        ...(cwd ? { cwd } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        args: args ?? [],
+        env: env ?? {},
+      }),
     });
   }
 
-  async deleteMcpServer(name: string, cwd: string): Promise<void> {
-    await this.request(`/api/mcp/${encodeURIComponent(name)}?cwd=${encodeURIComponent(cwd)}`, {
+  async deleteMcpServer(name: string, cwd?: string, sessionId?: string): Promise<void> {
+    const params = new URLSearchParams();
+    if (cwd) params.set('cwd', cwd);
+    if (sessionId) params.set('sessionId', sessionId);
+    const query = params.toString();
+    const url = query
+      ? `/api/mcp/${encodeURIComponent(name)}?${query}`
+      : `/api/mcp/${encodeURIComponent(name)}`;
+    await this.request(url, {
       method: 'DELETE',
     });
   }
 
   // Memory files (CLAUDE.md)
-  async getMemoryFiles(cwd?: string): Promise<{
+  async getMemoryFiles(cwd?: string, sessionId?: string): Promise<{
     files: Array<{ path: string; content: string }>;
   }> {
-    const params = cwd ? `?cwd=${encodeURIComponent(cwd)}` : '';
-    return this.request(`/api/memory${params}`);
+    const params = new URLSearchParams();
+    if (cwd) params.set('cwd', cwd);
+    if (sessionId) params.set('sessionId', sessionId);
+    const query = params.toString();
+    const url = query ? `/api/memory?${query}` : '/api/memory';
+    return this.request(url);
   }
 
-  async saveMemoryFile(path: string, content: string, cwd?: string): Promise<void> {
+  async saveMemoryFile(path: string, content: string, cwd?: string, sessionId?: string): Promise<void> {
     await this.request('/api/memory', {
       method: 'PUT',
-      body: JSON.stringify({ path, content, ...(cwd ? { cwd } : {}) }),
+      body: JSON.stringify({
+        path,
+        content,
+        ...(cwd ? { cwd } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      }),
     });
   }
 }

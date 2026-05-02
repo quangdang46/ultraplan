@@ -46,3 +46,13 @@ data
 teach-me
 credentials.json
 fixtures/*
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# RCS workspace and runtime
+.workspace/
+.beads/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

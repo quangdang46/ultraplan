@@ -44,6 +44,10 @@ interface SubprocessHandle {
   tokenUsage: TokenUsage;
   permissionState: PermissionState;
   enqueueMessage(payload: string): Promise<void>;
+  requestControl(
+    request: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<Record<string, unknown>>;
   interrupt(): void;
   writeStdin(data: string): void;
   kill(): void;
@@ -55,6 +59,19 @@ type TurnCompletionReason = "result" | "idle" | "error" | "requires_action";
 type PendingTurnCompletion = {
   started: boolean;
   resolve: (reason: TurnCompletionReason) => void;
+};
+
+type ControlResponseEnvelope = {
+  requestId: string;
+  subtype: "success" | "error";
+  response?: Record<string, unknown>;
+  error?: string;
+};
+
+type PendingControlResponse = {
+  resolve: (response: Record<string, unknown>) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
 };
 
 // ---------------------------------------------------------------------------
@@ -112,6 +129,56 @@ function extractRequiresActionDetails(parsed: Record<string, unknown>): Record<s
   return {
     request_id: String(parsed.request_id ?? ""),
     request: request as Record<string, unknown>,
+  };
+}
+
+export function extractControlResponseEnvelope(
+  parsed: Record<string, unknown>,
+): ControlResponseEnvelope | null {
+  if (parsed.type !== "control_response") {
+    return null;
+  }
+
+  const response =
+    parsed.response && typeof parsed.response === "object" && !Array.isArray(parsed.response)
+      ? (parsed.response as Record<string, unknown>)
+      : null;
+  const requestId =
+    typeof response?.request_id === "string" && response.request_id
+      ? response.request_id
+      : typeof parsed.request_id === "string" && parsed.request_id
+        ? parsed.request_id
+        : null;
+  if (!requestId) {
+    return null;
+  }
+
+  const subtype =
+    response?.subtype === "success" || response?.subtype === "error"
+      ? response.subtype
+      : parsed.subtype === "success" || parsed.subtype === "error"
+        ? parsed.subtype
+        : null;
+  if (!subtype) {
+    return null;
+  }
+
+  const businessResponse =
+    response?.response && typeof response.response === "object" && !Array.isArray(response.response)
+      ? (response.response as Record<string, unknown>)
+      : undefined;
+  const error =
+    typeof response?.error === "string"
+      ? response.error
+      : typeof parsed.error === "string"
+        ? parsed.error
+        : undefined;
+
+  return {
+    requestId,
+    subtype,
+    ...(businessResponse ? { response: businessResponse } : {}),
+    ...(error ? { error } : {}),
   };
 }
 
@@ -449,15 +516,23 @@ function mapSubprocessEventToNormalized(
         },
       ];
     case "control_response":
-      return [
-        {
-          type: "control_response",
-          data: {
-            request_id: String(parsed.request_id ?? ""),
-            approved: Boolean(parsed.approved),
+      {
+        const response =
+          parsed.response && typeof parsed.response === "object" && !Array.isArray(parsed.response)
+            ? (parsed.response as Record<string, unknown>)
+            : undefined;
+        const envelope = extractControlResponseEnvelope(parsed);
+        return [
+          {
+            type: "control_response",
+            data: {
+              request_id: envelope?.requestId ?? "",
+              approved: envelope?.subtype === "success",
+              ...(response ? { response } : {}),
+            },
           },
-        },
-      ];
+        ];
+      }
     case "tool_use":
       return [
         {
@@ -532,6 +607,7 @@ function mapSubprocessEventToNormalized(
 // ---------------------------------------------------------------------------
 
 const READY_TIMEOUT_MS = 250;
+const CONTROL_REQUEST_TIMEOUT_MS = 15_000;
 const STDERR_LINE_LIMIT = 50;
 
 class SubprocessHandleImpl implements SubprocessHandle {
@@ -546,12 +622,14 @@ class SubprocessHandleImpl implements SubprocessHandle {
   private messageChain: Promise<void> = Promise.resolve();
   private stderrLines: string[] = [];
   private pendingTurnCompletion: PendingTurnCompletion | null = null;
+  private pendingControlResponses = new Map<string, PendingControlResponse>();
   private sawTextPartial = false;
   private sawThinkingPartial = false;
   private streamedToolIds = new Set<string>();
   private toolStartTimes = new Map<string, number>();
   private blockIndexMap = new Map<number, { id: string; name: string }>();
   private activeToolId: string | null = null;
+  private suppressExitSideEffects = false;
 
   constructor(sessionId: string, child: ChildProcess, cwd: string) {
     this.sessionId = sessionId;
@@ -561,6 +639,9 @@ class SubprocessHandleImpl implements SubprocessHandle {
 
     this.done = new Promise((resolve) => {
       child.on("close", (code, signal) => {
+        this.rejectPendingControlResponses(
+          formatFailureMessage(this.stderrLines, code, signal),
+        );
         const status =
           signal === "SIGTERM" || signal === "SIGINT"
             ? "interrupted"
@@ -568,13 +649,16 @@ class SubprocessHandleImpl implements SubprocessHandle {
               ? "completed"
               : "failed";
 
-        updateSessionStatus(
-          sessionId,
-          status === "completed" ? "idle" : status === "interrupted" ? "interrupted" : "interrupted",
-        );
         clearRequiresActionDetails(sessionId);
 
-        if (status !== "completed") {
+        if (!this.suppressExitSideEffects) {
+          updateSessionStatus(
+            sessionId,
+            status === "completed" ? "idle" : status === "interrupted" ? "interrupted" : "interrupted",
+          );
+        }
+
+        if (!this.suppressExitSideEffects && status !== "completed") {
           publishSessionEvent(
             sessionId,
             "error",
@@ -586,26 +670,29 @@ class SubprocessHandleImpl implements SubprocessHandle {
           );
         }
 
-        publishSessionEvent(
-          sessionId,
-          "session_ended",
-          {
+        if (!this.suppressExitSideEffects) {
+          publishSessionEvent(
             sessionId,
-            reason:
-              status === "completed"
-                ? "completed"
-                : status === "interrupted"
-                  ? "killed"
-                  : "error",
-          },
-          "outbound",
-        );
+            "session_ended",
+            {
+              sessionId,
+              reason:
+                status === "completed"
+                  ? "completed"
+                  : status === "interrupted"
+                    ? "killed"
+                    : "error",
+            },
+            "outbound",
+          );
+        }
 
         resolve(status);
       });
 
       child.on("error", (error) => {
         this.captureStderr((error as Error).message);
+        this.rejectPendingControlResponses((error as Error).message);
         publishSessionEvent(
           sessionId,
           "error",
@@ -668,6 +755,14 @@ class SubprocessHandleImpl implements SubprocessHandle {
     if (this.stderrLines.length > STDERR_LINE_LIMIT) this.stderrLines.shift();
   }
 
+  private rejectPendingControlResponses(message: string): void {
+    for (const [requestId, pending] of this.pendingControlResponses) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(message));
+      this.pendingControlResponses.delete(requestId);
+    }
+  }
+
   private mapStreamEventWithTracking(parsed: Record<string, unknown>): NormalizedEvent[] {
     return mapStreamEvent(parsed, this.blockIndexMap);
   }
@@ -694,7 +789,20 @@ class SubprocessHandleImpl implements SubprocessHandle {
       storeUpsertSessionWorker(this.sessionId, { requiresActionDetails });
     }
 
-    if (parsed.type === "control_response") {
+    const controlResponseEnvelope = extractControlResponseEnvelope(parsed);
+    if (controlResponseEnvelope) {
+      const pending = this.pendingControlResponses.get(controlResponseEnvelope.requestId);
+      if (pending) {
+        clearTimeout(pending.timeout);
+        this.pendingControlResponses.delete(controlResponseEnvelope.requestId);
+        if (controlResponseEnvelope.subtype === "success") {
+          pending.resolve(controlResponseEnvelope.response ?? {});
+        } else {
+          pending.reject(
+            new Error(controlResponseEnvelope.error ?? "Control request failed"),
+          );
+        }
+      }
       clearRequiresActionDetails(this.sessionId);
     }
 
@@ -875,6 +983,45 @@ class SubprocessHandleImpl implements SubprocessHandle {
     await run;
   }
 
+  requestControl(
+    request: Record<string, unknown>,
+    timeoutMs = CONTROL_REQUEST_TIMEOUT_MS,
+  ): Promise<Record<string, unknown>> {
+    if (this.child.killed || this.child.exitCode !== null) {
+      return Promise.reject(
+        new Error(
+          formatFailureMessage(this.stderrLines, this.child.exitCode, null),
+        ),
+      );
+    }
+
+    const requestId = crypto.randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingControlResponses.delete(requestId);
+        reject(
+          new Error(
+            `Timed out waiting for control response: ${String(request.subtype ?? requestId)}`,
+          ),
+        );
+      }, timeoutMs);
+
+      this.pendingControlResponses.set(requestId, {
+        resolve,
+        reject,
+        timeout,
+      });
+
+      this.writeStdin(
+        JSON.stringify({
+          type: "control_request",
+          request_id: requestId,
+          request,
+        }),
+      );
+    });
+  }
+
   writeStdin(data: string): void {
     if (this.child.stdin && !this.child.stdin.destroyed) {
       this.child.stdin.write(data + "\n");
@@ -895,8 +1042,13 @@ class SubprocessHandleImpl implements SubprocessHandle {
     if (!this.child.killed) this.child.kill("SIGTERM");
   }
 
+  suppressExitEvents(): void {
+    this.suppressExitSideEffects = true;
+  }
+
   destroy(): void {
     this.pendingTurnCompletion = null;
+    this.rejectPendingControlResponses("Subprocess handle destroyed");
   }
 }
 
@@ -934,6 +1086,7 @@ export function toCliSessionId(sessionId: string): string {
 type SubprocessLaunchOptions = {
   model?: string;
   permissionMode?: string;
+  thinkingEffort?: string;
 };
 
 export function resolveSubprocessLaunchOptions(
@@ -947,10 +1100,12 @@ export function resolveSubprocessLaunchOptions(
     sessionState?.permissionMode?.trim() ||
     session?.permission_mode?.trim() ||
     undefined;
+  const thinkingEffort = sessionState?.thinkingEffort?.trim() || undefined;
 
   return {
     ...(model ? { model } : {}),
     ...(permissionMode ? { permissionMode } : {}),
+    ...(thinkingEffort ? { thinkingEffort } : {}),
   };
 }
 
@@ -958,6 +1113,7 @@ export function buildSubprocessArgs(
   sessionId: string,
   resume: boolean,
   launchOptions: SubprocessLaunchOptions,
+  resumeSessionAt?: string,
 ): string[] {
   const cliSessionId = toCliSessionId(sessionId);
 
@@ -973,23 +1129,36 @@ export function buildSubprocessArgs(
     "--print",
     "--verbose",
     "--include-partial-messages",
+    "--permission-prompt-tool", "stdio",
     ...(resume ? ["--resume", cliSessionId] : ["--session-id", cliSessionId]),
+    ...(resume && resumeSessionAt
+      ? ["--resume-session-at", resumeSessionAt]
+      : []),
     "--input-format", "stream-json",
     "--output-format", "stream-json",
     ...(launchOptions.model ? ["--model", launchOptions.model] : []),
+    ...(launchOptions.thinkingEffort
+      ? ["--effort", launchOptions.thinkingEffort]
+      : []),
     ...(launchOptions.permissionMode
       ? ["--permission-mode", launchOptions.permissionMode]
       : []),
   ];
 }
 
-function spawnSubprocess(sessionId: string, cwd: string, resume: boolean): ChildProcess {
+function spawnSubprocess(
+  sessionId: string,
+  cwd: string,
+  resume: boolean,
+  resumeSessionAt?: string,
+): ChildProcess {
   // Re-exec the same bun binary with the CLI entrypoint
   const execPath = process.execPath; // e.g. /usr/local/bin/bun
   const args = buildSubprocessArgs(
     sessionId,
     resume,
     resolveSubprocessLaunchOptions(sessionId),
+    resumeSessionAt,
   );
 
   const env: NodeJS.ProcessEnv = {
@@ -1014,7 +1183,12 @@ class SubprocessManager {
   private handles = new Map<string, SubprocessHandleImpl>();
   private capacity = 16;
 
-  async getOrSpawn(sessionId: string, cwd: string, resume = false): Promise<SubprocessHandle> {
+  async getOrSpawn(
+    sessionId: string,
+    cwd: string,
+    resume = false,
+    resumeSessionAt?: string,
+  ): Promise<SubprocessHandle> {
     const existing = this.handles.get(sessionId);
     if (existing) return existing;
 
@@ -1023,7 +1197,7 @@ class SubprocessManager {
     }
 
     const launchOptions = resolveSubprocessLaunchOptions(sessionId);
-    const child = spawnSubprocess(sessionId, cwd, resume);
+    const child = spawnSubprocess(sessionId, cwd, resume, resumeSessionAt);
     const handle = new SubprocessHandleImpl(sessionId, child, cwd);
     handle.permissionState.mode = launchOptions.permissionMode ?? "default";
     this.handles.set(sessionId, handle);
@@ -1061,6 +1235,23 @@ class SubprocessManager {
     return handle;
   }
 
+  async stop(
+    sessionId: string,
+    options: { suppressExitEvents?: boolean } = {},
+  ): Promise<void> {
+    const handle = this.handles.get(sessionId);
+    if (!handle) {
+      return;
+    }
+
+    if (options.suppressExitEvents) {
+      handle.suppressExitEvents();
+    }
+
+    handle.kill();
+    await handle.done;
+  }
+
   enqueueMessage(sessionId: string, payload: string): void {
     const handle = this.handles.get(sessionId);
     if (handle) {
@@ -1074,6 +1265,18 @@ class SubprocessManager {
 
   sendControl(sessionId: string, controlPayload: string): void {
     this.handles.get(sessionId)?.writeStdin(controlPayload);
+  }
+
+  requestControl(
+    sessionId: string,
+    request: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<Record<string, unknown>> {
+    const handle = this.handles.get(sessionId);
+    if (!handle) {
+      return Promise.reject(new Error(`No running subprocess for session ${sessionId}`));
+    }
+    return handle.requestControl(request, timeoutMs);
   }
 
   isRunning(sessionId: string): boolean {

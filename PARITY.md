@@ -10,13 +10,18 @@
 
 ## Bottom Line
 
-Today this repo is closer to **Claude Code Remote Control in `same-dir` mode** than to **Claude Code on the web**:
+Today the root web flow is no longer `same-dir` by default:
 
-- it can host multiple session IDs
-- it can run multiple subprocesses
-- but session workspace, session runtime state, and transcript rehydration are still not truly first-class per-session resources
+- new sessions materialize into `.workspace/worktrees/<sessionId>` for git repos
+- non-git targets materialize into isolated `.workspace/workdirs/<sessionId>`
+- session runtime state and transcript replay are persisted per session
+- root-web fork now creates a sibling workspace and clones persisted transcript/state
 
-That is why it still feels like "one local process with several chat tabs" instead of "many isolated Claude Code web sessions."
+The remaining parity gap is no longer "shared cwd tabs." It is the deeper architecture:
+
+- runtime still flows through CLI subprocesses
+- command/permission behavior is still not fully backend-native
+- environment/work-item substrate is still only partially reused by the root `/api/*` lane
 
 The target model should be:
 
@@ -70,20 +75,20 @@ Web / CLI / integrations
 
 | Capability | Claude Code web contract | Parity class | Local target for this repo | Current repo status | Gap |
 |------|---------|------|---------|------|------|
-| Session runtime isolation | Each web session runs in a fresh Anthropic-managed VM and works on isolated changes. | `Local Approximation` | Each session gets its own persisted workspace path and its own worker process. | `Partial` | Per-session subprocesses and persisted workspace records now exist, and resume/chat resolve from stored workspace metadata. The remaining gap is default isolation strategy: sessions still default to `same-dir` instead of isolated worktrees/workdirs. |
-| Session = workspace binding | A session is not just a chat thread; it is bound to an environment/repo/branch. | `Exact` | Persist a workspace record and resolve everything from that record, never from process-global cwd. | `Partial` | Root `/api/*` now persists `cwd` into a workspace record and returns it to the web client, but workspace materialization is still `same-dir` by default and repo/branch identity is not yet first-class. |
-| Durable transcript and full rehydrate | Reopening a session restores the real history: messages, tool calls, tool results, and thinking. | `Exact` | Session history API must return reconstructable structured transcript blocks. | `Partial` | `/api/sessions/:id/messages` now rebuilds structured user/assistant/tool/thinking blocks and the web UI rehydrates them correctly. Remaining gap: this is proven for core turn artifacts, not every possible CLI block shape. |
+| Session runtime isolation | Each web session runs in a fresh Anthropic-managed VM and works on isolated changes. | `Local Approximation` | Each session gets its own persisted workspace path and its own worker process. | `Mostly implemented` | New root-web sessions now materialize into isolated worktrees/workdirs by default and chat/resume run from that persisted workspace. Remaining gap: worker runtime is still subprocess-based instead of backend-core owned. |
+| Session = workspace binding | A session is not just a chat thread; it is bound to an environment/repo/branch. | `Exact` | Persist a workspace record and resolve everything from that record, never from process-global cwd. | `Mostly implemented` | Root `/api/*` session creation now persists materialized workspace metadata and the web client consumes that canonical workspace path/branch. Remaining gap: explicit no-session fallbacks can still end at raw `cwd`/`process.cwd()` for standalone utility use. |
+| Durable transcript and full rehydrate | Reopening a session restores the real history: messages, tool calls, tool results, and thinking. | `Exact` | Session history API must return reconstructable structured transcript blocks. | `Mostly implemented` | `/api/sessions/:id/messages` now rebuilds structured user/assistant/tool/thinking blocks, returns a replay cursor, and the web UI rehydrates + reattaches without duplicating assistant output on reload. Remaining gap: this is proven for core turn artifacts, not every possible CLI block shape. |
 | Session-scoped runtime state | Model, permission mode, and reasoning/thinking settings are session-level, not process-global. | `Exact` | Store and restore runtime state per session. | `Partial` | `/api/state` is now session-aware and persists `model` / `permissionMode` / `thinkingEffort`, and subprocess spawn consumes session `model` + `permissionMode`. Remaining gap: not every runtime knob is wired live into already-running workers. |
-| Parallel sessions by default | Parallel sessions should not stomp each other's files or runtime state. | `Exact` | Default to isolated workspaces, not shared cwd. | `Partial` | `AsyncLocalStorage` session context exists and `SubprocessManager` can run multiple sessions, but shared cwd fallbacks still make the behavior effectively `same-dir` in many flows. |
-| Resume semantics | Reopen the same session, on the same work context, with the same transcript. | `Exact` | Resume should reattach or respawn into the same workspace with the same session state. | `Partial` | Resume now uses persisted workspace metadata and restores the core transcript/history correctly. The remaining gap is that the workspace implementation is still usually `same-dir`, not isolated materialization by default. |
-| Fork semantics | Fork creates a new session from existing history without mutating the original. | `Exact` | New session ID, copied transcript seed, sibling workspace/branch. | `Missing` | No real root-web fork flow exists today. |
+| Parallel sessions by default | Parallel sessions should not stomp each other's files or runtime state. | `Exact` | Default to isolated workspaces, not shared cwd. | `Mostly implemented` | Root-web session creation and first-run upgrade now converge on isolated worktrees/workdirs, so parallel sessions no longer share the repo working directory by default. Remaining gap: legacy sessions created before this migration can still exist until reopened or replaced. |
+| Resume semantics | Reopen the same session, on the same work context, with the same transcript. | `Exact` | Resume should reattach or respawn into the same workspace with the same session state. | `Mostly implemented` | Resume upgrades legacy same-dir sessions onto managed workspaces and respawns the worker against the persisted workspace path. Remaining gap: the restart path is still subprocess-driven, not backend-core owned. |
+| Fork semantics | Fork creates a new session from existing history without mutating the original. | `Exact` | New session ID, copied transcript seed, sibling workspace/branch. | `Implemented` | Root `/api/sessions/:id/fork` now creates a sibling workspace, copies session state, and clones persisted transcript events. Remaining gap: transcript cloning currently follows persisted events, not a dedicated backend-core transcript model. |
 | Environment lifecycle | Sessions run inside a chosen environment; environments can be prepared, reused, or recreated after runtime expiry. | `Local Approximation` | Model environment as a reusable profile plus workspace materialization under `.workspace/`. | `Partial` | The repo already has `environments`, `work_items`, `session_workers`, and `/v1/environments/*`, but the root `/api/*` web path mostly bypasses that substrate and does not dispatch work the way the environment lanes do. |
-| Repo and branch identity | A session is tied to repo/branch state and the UI can surface that identity. | `Exact` | Persist repo root, branch, base ref, and workspace path on the session/workspace record. | `Partial` | Workspace path is now canonical in the root web flow, and `/api/state` can return workspace branch metadata when present. The remaining gap is that branch/base-ref capture is still not populated consistently for root `/api/*` sessions. |
+| Repo and branch identity | A session is tied to repo/branch state and the UI can surface that identity. | `Exact` | Persist repo root, branch, base ref, and workspace path on the session/workspace record. | `Mostly implemented` | New root-web sessions now persist repo root, base ref, branch, and materialized workspace path; the web sidebar/state surface that branch identity. Remaining gap: current mapping is single-repo and normalizes session cwd to the repo root for git-backed worktrees. |
 | Multi-repo session | Claude Code web remote sessions can include multiple repositories. | `Phase 2` | Data model should allow 1..N repos per workspace even if v1 only materializes one. | `Missing` | Current flow is single-cwd only and has no repo set or repo-mount model. |
-| Review / archive / delete | Web sessions can be reviewed, archived, or deleted from the UI. | `Phase 2` | Diff review plus archive/delete first; sharing can be deferred for local-only mode. | `Partial` | Some UI affordances exist, but session lifecycle is still centered on process state, not workspace/session artifacts. |
+| Review / archive / delete | Web sessions can be reviewed, archived, or deleted from the UI. | `Phase 2` | Diff review plus archive/delete first; sharing can be deferred for local-only mode. | `Partial` | Delete/archive from the root web route now dematerializes managed workspaces, but review/archive lifecycle is still incomplete at the product level. |
 | Share / teammate handoff | Claude Code web lets users share sessions and collaborate through Anthropic surfaces. | `Not Target` | Optional later. | `N/A` | This is cloud-product behavior, not core local parity. |
 | Teleport cloud session to terminal | Cloud session can move into terminal with branch + history restored. | `Not Target` | Optional later. | `N/A` | Valuable, but not required for "real multiple session" parity in this repo. |
-| Security / isolation model | Anthropic runs the session in managed cloud infra with scoped credentials and isolation. | `Local Approximation` | Local sandbox plus per-workspace env injection; no session-bound behavior may leak through `process.cwd()`. | `Partial` | Session-bound search/memory/MCP/state routes now accept or derive workspace-aware cwd/session context, but default workspace materialization is still `same-dir` and some fallbacks still end at `process.cwd()`. |
+| Security / isolation model | Anthropic runs the session in managed cloud infra with scoped credentials and isolation. | `Local Approximation` | Local sandbox plus per-workspace env injection; no session-bound behavior may leak through `process.cwd()`. | `Partial` | Session-bound search/memory/MCP/state routes now resolve from session workspace context and new sessions default to isolated worktrees/workdirs. Remaining gap: standalone utility fallbacks and shared local credentials are still fundamentally weaker than Anthropic-managed cloud isolation. |
 
 ---
 
@@ -178,16 +183,16 @@ Notes:
 
 ## Important Current-Code Evidence
 
-- `packages/remote-control-server/src/store.ts`
-  Root web session creation now persists a workspace row immediately, including `cwd` as `workspace_path` / `source_root`.
+- `packages/remote-control-server/src/services/session-workspace.ts`
+  Root-web session creation now upgrades the placeholder workspace row into an isolated managed workspace under `.workspace/`, preferring git worktrees and falling back to copied workdirs.
 - `packages/remote-control-server/src/routes/web/sessions.ts:18-40`
   The older web session lane does dispatch work to an environment when `environment_id` is present.
 - `packages/remote-control-server/src/routes/v1/sessions.ts:16-39`
   The v1 session lane also dispatches environment work, which highlights how the root `/api/*` adapter bypasses that model.
 - `packages/remote-control-server/src/routes/api/index.ts`
-  Resume now prefers persisted workspace metadata, chat stream resolves from stored workspace context, `/api/sessions/:id/messages` rebuilds structured transcript blocks, and `/api/state` persists session runtime state.
+  Create/resume/chat now materialize managed workspaces, fork now clones sibling workspaces plus persisted transcript, `/api/sessions/:id/messages` rebuilds structured transcript blocks, `/api/state` persists session runtime state, and the SSE routes now emit keepalive frames plus stable `seqNum` metadata for replay dedupe.
 - `packages/remote-control-server/src/routes/api/index.ts`
-  Search, MCP, and memory flows now accept session/workspace-aware cwd resolution, though some fallback paths still end at `process.cwd()`.
+  Search, MCP, and memory flows now resolve from session/workspace-aware cwd resolution when a session is present, though standalone fallback paths still end at `process.cwd()`.
 - `packages/remote-control-server/src/services/subprocess-manager.ts:954-997`
   Multiple per-session subprocesses already exist.
 - `packages/remote-control-server/src/services/session-context.ts:12-44`
@@ -206,8 +211,8 @@ Notes:
   Frontend history hydration already expects structured session messages.
 - `web/src/pages/Index.tsx:532-549`
   The route session loader assumes the history endpoint can provide that structured transcript.
-- `web/src/hooks/useSessions.ts:51-60`
-  The web client calls `createSession(cwd)`, but the backend does not honor that as a true workspace contract.
+- `web/src/hooks/useSessions.ts`
+  The web client now consumes create/fork session APIs that return backend-owned workspace metadata, rather than assuming a raw cwd is the workspace contract.
 - `scripts/dev-all.mjs:70-85`
   Dev reset wipes DB/artifacts, but it is not yet a real workspace/session store reset.
 - `src/screens/REPL.tsx:4138-4141`
@@ -248,6 +253,29 @@ That is the architecture needed if the long-term goal is a real backend platform
 ## Verification Standard
 
 Parity should not be declared complete from mocked tests alone.
+
+### Verified on 2026-05-01
+
+- `POST /api/sessions` returned `cwd=/data/projects/ultraplan/.workspace/worktrees/<sessionId>`
+- `GET /api/state?sessionId=...` returned the same isolated cwd plus `gitBranch=main-rcs-...`
+- A real model turn replied `WORKSPACE_OK` from the isolated workspace
+- `POST /api/sessions/:id/fork` returned a sibling worktree and `/api/sessions/:forkId/messages` replayed the cloned transcript
+- A real `curl` POST `/api/chat/stream` turn stayed open across the idle gap, emitted keepalive frames, and completed with `thinking_delta`, `content_delta`, and `message_end`
+- `GET /api/sessions/:id/messages` returned `lastSeqNum=7` for a completed turn
+- A real browser reload of `/chat/<sessionId>` reattached via `GET /api/sessions/:id/stream?from=7`
+- The reloaded DOM contained exactly one assistant leaf node for `RCS_DUP_OK_43`, proving hydrate + replay no longer double-renders the assistant reply
+- A real default-runtime `Edit` turn emitted `permission_request`, `POST /api/chat/control` approved it, and the isolated workspace file changed to `EDIT_ME_AFTER` before the assistant replied `EDIT_PERMISSION_DONE`
+
+### Verified on 2026-05-02
+
+- A real attached-session slash-command flow used `POST /api/sessions`, `GET /api/sessions/:id/stream`, and `POST /api/command/execute` only; the server log contained no `POST /api/chat/stream` request for that flow
+- A real `POST /api/command/execute` `/cost` turn returned `200`, and `GET /api/sessions/:id/messages` persisted both the user `/cost` command and the assistant cost summary
+- A real backend-native `/cost` turn streamed only `message_start`, `content_delta`, and `message_end` over the attached session SSE, proving it no longer depends on subprocess bootstrap for that command path
+- A real no-session slash-command flow used `POST /api/command/execute?cwd=...`, returned a new `sessionId`, and `GET /api/state?sessionId=...` plus `GET /api/sessions/:id/messages` rehydrated the isolated workspace/session without any `POST /api/chat/stream` request
+- A real no-session backend-native `/files` turn used `POST /api/command/execute?cwd=...` and `GET /api/sessions/:id/messages` only, and persisted `No files in context` without any `POST /api/chat/stream` request
+- A real no-session backend-native `/release-notes` turn returned `200` over `POST /api/command/execute`, persisted the user command plus the changelog link in `GET /api/sessions/:id/messages`, and still did not touch subprocess bootstrap when `getOrSpawn`/`enqueueMessage` were forced to throw
+- A real workspace workflow command in `.claude/workflows/release.md` appeared in `GET /api/suggest/commands?q=release&cwd=...`, and `POST /api/command/execute` for `/release` returned `200` with `executionMode: "prompt"` instead of `404`, then delegated into the isolated workspace runtime
+- A real project markdown command in `.claude/commands/ops/deploy.md` appeared in `GET /api/suggest/commands?q=ops&cwd=...`, and `POST /api/command/execute` for `/ops:deploy` returned `200` with `executionMode: "prompt"` instead of `404`, then delegated into the isolated workspace runtime
 
 ### Backend/API acceptance
 

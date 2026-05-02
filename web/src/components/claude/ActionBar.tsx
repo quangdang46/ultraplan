@@ -106,7 +106,6 @@ export const ActionBar = ({
     sendMessage,
     executeSlashCommand,
     cancelStream,
-    clearMessages,
     isStreaming,
   } = useStreamContext();
 
@@ -201,7 +200,11 @@ export const ActionBar = ({
       setSuggestionError(null);
       try {
         if (triggerState.trigger === "@") {
-          const result = await client.suggestFiles(triggerState.query, suggestionCwd || undefined);
+          const result = await client.suggestFiles(
+            triggerState.query,
+            suggestionCwd || undefined,
+            sessionId ?? undefined,
+          );
           if (isCancelled || seq !== requestSeqRef.current) return;
           const mapped = result.items.map((item: FileSuggestion) => ({
             key: item.id ?? item.path ?? item.displayText,
@@ -214,7 +217,11 @@ export const ActionBar = ({
           setSuggestions(mapped);
           setSuggestionsMeta({ isPartial: result.isPartial, capApplied: result.capApplied });
         } else {
-          const result = await client.suggestCommands(triggerState.query, suggestionCwd || undefined);
+          const result = await client.suggestCommands(
+            triggerState.query,
+            suggestionCwd || undefined,
+            sessionId ?? undefined,
+          );
           if (isCancelled || seq !== requestSeqRef.current) return;
           const mapped = result.items.map((item: CommandSuggestion) => ({
             key: item.name,
@@ -299,22 +306,9 @@ export const ActionBar = ({
       let handledLocally = true;
 
       switch (commandName) {
-        case "clear":
-          clearMessages(sessionId ?? null);
-          if (quote) {
-            onClearQuote();
-          }
-          break;
         case "help":
         case "keybindings":
           setShortcutHelpOpen(true);
-          break;
-        case "rewind":
-          if (sessionId) {
-            await handleRewind();
-          } else {
-            handledLocally = false;
-          }
           break;
         case "search":
           if (onOpenSearch) {
@@ -411,7 +405,7 @@ export const ActionBar = ({
   const handleRewind = async () => {
     if (!sessionId) return;
     try {
-      await client.rewindSession(sessionId);
+      await executeSlashCommand('/rewind', sessionId);
     } catch {
       // ignore
     }

@@ -8,6 +8,7 @@ export type ChatStreamRequest = {
   message?: string
   quote?: ReplyQuote
   sessionId?: string
+  userMessageId?: string
 }
 
 export type ChatControlRequest = {

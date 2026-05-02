@@ -90,7 +90,7 @@ describe('ActionBar quote submit', () => {
     expect(onClearQuote).toHaveBeenCalledTimes(1);
   });
 
-  test('handles /clear locally without delegating to the stream', async () => {
+  test('delegates /clear to backend execution for the active session', async () => {
     render(<ActionBar quote={null} onClearQuote={vi.fn()} sessionId="session-1" />);
 
     const input = screen.getByPlaceholderText('Reply…');
@@ -98,9 +98,58 @@ describe('ActionBar quote submit', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
 
     await waitFor(() => {
-      expect(streamContext.clearMessages).toHaveBeenCalledWith('session-1');
+      expect(streamContext.executeSlashCommand).toHaveBeenCalledWith('/clear', 'session-1');
     });
     expect(streamContext.sendMessage).not.toHaveBeenCalled();
-    expect(streamContext.executeSlashCommand).not.toHaveBeenCalled();
+    expect(streamContext.clearMessages).not.toHaveBeenCalled();
+  });
+
+  test('delegates typed /rewind to backend execution for the active session', async () => {
+    render(<ActionBar quote={null} onClearQuote={vi.fn()} sessionId="session-1" />);
+
+    const input = screen.getByPlaceholderText('Reply…');
+    fireEvent.change(input, { target: { value: '/rewind' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(streamContext.executeSlashCommand).toHaveBeenCalledWith('/rewind', 'session-1');
+    });
+    expect(streamContext.sendMessage).not.toHaveBeenCalled();
+  });
+
+  test('rewind button delegates to backend execution for the active session', async () => {
+    render(<ActionBar quote={null} onClearQuote={vi.fn()} sessionId="session-1" />);
+
+    fireEvent.click(screen.getByText('Rewind'));
+
+    await waitFor(() => {
+      expect(streamContext.executeSlashCommand).toHaveBeenCalledWith('/rewind', 'session-1');
+    });
+  });
+
+  test('delegates unsupported slash commands to backend execution for the active session', async () => {
+    render(<ActionBar quote={null} onClearQuote={vi.fn()} sessionId="session-1" />);
+
+    const input = screen.getByPlaceholderText('Reply…');
+    fireEvent.change(input, { target: { value: '/status' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(streamContext.executeSlashCommand).toHaveBeenCalledWith('/status', 'session-1');
+    });
+    expect(streamContext.sendMessage).not.toHaveBeenCalled();
+  });
+
+  test('delegates unsupported slash commands to backend execution before a session exists', async () => {
+    render(<ActionBar quote={null} onClearQuote={vi.fn()} />);
+
+    const input = screen.getByPlaceholderText('Reply…');
+    fireEvent.change(input, { target: { value: '/status' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(streamContext.executeSlashCommand).toHaveBeenCalledWith('/status', undefined);
+    });
+    expect(streamContext.sendMessage).not.toHaveBeenCalled();
   });
 });

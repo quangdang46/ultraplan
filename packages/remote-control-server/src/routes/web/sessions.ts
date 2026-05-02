@@ -14,6 +14,7 @@ import {
 } from "../../services/session";
 import { storeBindSession, storeGetSessionWorker } from "../../store";
 import { createWorkItem } from "../../services/work-dispatch";
+import { ensureSessionWorkspace } from "../../services/session-workspace";
 import { createSSEStream, resolveReplayCursor } from "../../transport/sse-writer";
 import { getEventBus } from "../../transport/event-bus";
 
@@ -28,6 +29,7 @@ app.post("/sessions", uuidAuth, async (c) => {
     title: body.title || "New Session",
     source: "web",
     permission_mode: body.permission_mode || "default",
+    cwd: body.cwd || null,
   });
 
   // Auto-bind to creator's UUID
@@ -42,7 +44,12 @@ app.post("/sessions", uuidAuth, async (c) => {
     }
   }
 
-  return c.json(session, 200);
+  await ensureSessionWorkspace(session.id, {
+    cwd: body.cwd || null,
+    forceIsolation: true,
+  });
+
+  return c.json(toWebSessionResponse(getSession(session.id) ?? session), 200);
 });
 
 /** GET /web/sessions — List sessions owned by the requesting UUID */

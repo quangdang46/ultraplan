@@ -120,6 +120,7 @@ describe("toClientPayload — permission response", () => {
     expect(resp.subtype).toBe("success");
     expect(resp.request_id).toBe("req-1");
     expect(resp.response.behavior).toBe("allow");
+    expect(resp.response.updatedInput).toEqual({});
   });
 
   test("approved=false maps to deny behavior with error", () => {

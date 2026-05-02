@@ -105,7 +105,7 @@ const Index = () => {
 	const navigate = useNavigate();
 	const location = useLocation();
 	const { chatId } = useParams<{ chatId?: string }>();
-	const { sessions, loading, error, refetch, createSession, killSession, renameSession } = useSessions();
+	const { sessions, loading, error, refetch, createSession, forkSession, killSession, renameSession } = useSessions();
 	const resolvedSessionId = chatId ?? activeSession?.id ?? null;
 
 	useEffect(() => {
@@ -302,6 +302,7 @@ const Index = () => {
 								error={error}
 								refetch={refetch}
 								createSession={createSession}
+								forkSession={forkSession}
 								killSession={killSession}
 								renameSession={renameSession}
 								collapsed
@@ -325,6 +326,7 @@ const Index = () => {
 								error={error}
 								refetch={refetch}
 								createSession={createSession}
+								forkSession={forkSession}
 								killSession={killSession}
 								renameSession={renameSession}
 								collapsed={false}
@@ -410,6 +412,7 @@ const Index = () => {
 							error={error}
 							refetch={refetch}
 							createSession={createSession}
+							forkSession={forkSession}
 							killSession={killSession}
 							renameSession={renameSession}
 						/>
@@ -443,6 +446,7 @@ const Index = () => {
 			{searchOpen && (
 				<SearchDialog
 					cwd={activeSession?.cwd ?? null}
+					sessionId={resolvedSessionId}
 					onClose={() => setSearchOpen(false)}
 					onSelect={(ref) => {
 						setQuote((q) => q ? `${q} ${ref}` : ref);
@@ -452,12 +456,14 @@ const Index = () => {
 			{mcpOpen && (
 				<McpManagerDialog
 					cwd={activeSession?.cwd ?? null}
+					sessionId={resolvedSessionId}
 					onClose={() => setMcpOpen(false)}
 				/>
 			)}
 			{memoryOpen && (
 				<MemoryDialog
 					cwd={activeSession?.cwd ?? null}
+					sessionId={resolvedSessionId}
 					onClose={() => setMemoryOpen(false)}
 				/>
 			)}
@@ -555,12 +561,12 @@ function SessionRuntimeLoader({ sessionId, enabled }: { sessionId: string | null
 			let missing = false;
 			try {
 				await ensureApiAuthenticated(client);
-				const msgs = await client.getSessionMessages(sessionId);
+				const history = await client.getSessionHistory(sessionId);
 				if (cancelled) return;
 
 				setSessionMissing(false);
 				const converted = hydrateSessionMessages(
-					msgs.filter(
+					history.messages.filter(
 						(
 							m,
 						): m is typeof m & {
@@ -568,7 +574,10 @@ function SessionRuntimeLoader({ sessionId, enabled }: { sessionId: string | null
 						} => m.role === "user" || m.role === "assistant",
 					),
 				);
-				loadMessages(converted, sessionId, { preservePendingPermissions: true });
+				loadMessages(converted, sessionId, {
+					preservePendingPermissions: true,
+					lastSeqNum: history.lastSeqNum,
+				});
 			} catch (err) {
 				if (!cancelled) {
 					if (err instanceof ApiClientError && err.code === "SESSION_NOT_FOUND") {
@@ -580,16 +589,12 @@ function SessionRuntimeLoader({ sessionId, enabled }: { sessionId: string | null
 					console.error("Failed to load session history", err);
 				}
 			}
-
-			if (cancelled || missing) return;
-			void attachSession(sessionId);
 		};
 
 		void hydrateAndAttach();
 
 		return () => {
 			cancelled = true;
-			detachSession();
 		};
 	}, [
 		sessionId,

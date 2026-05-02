@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { resolve } from "node:path";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { serveStatic } from "hono/bun";
@@ -57,14 +58,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const distDir = resolve(__dirname, "../web/dist");
 const webDir = existsSync(resolve(distDir, "index.html")) ? distDir : resolve(__dirname, "../web");
 
-const stripCodePrefix = (p: string) => p.replace(/^\/code/, "");
-
-// Serve all static files under /code/* from web/ directory
-app.use("/code/*", serveStatic({ root: webDir, rewriteRequestPath: stripCodePrefix }));
-// /code, /code/, and /code/:sessionId — SPA fallback
-app.get("/code", serveStatic({ root: webDir, path: "index.html" }));
-app.get("/code/", serveStatic({ root: webDir, path: "index.html" }));
-app.get("/code/:sessionId", serveStatic({ root: webDir, path: "index.html" }));
+// Serve built SPA at root path (BrowserRouter uses /, /new, /chat/:id)
+app.use("/", serveStatic({ root: distDir }));
+// Serve static assets from distDir/assets/* (serveStatic doesn't recurse subdirs by default)
+app.use("/assets/*", async (c) => {
+  const path = c.req.path.replace(/^\/assets\//, "");
+  const file = Bun.file(resolve(distDir, "assets", path));
+  if (await file.exists()) {
+    return c.body(file);
+  }
+  return c.notFound();
+});
+// /new and /chat/:id — SPA fallback for client-side routing
+app.get("/new", serveStatic({ root: distDir, path: "index.html" }));
+app.get("/chat/:sessionId", serveStatic({ root: distDir, path: "index.html" }));
 
 // v1 Environment routes
 app.route("/v1/environments", v1Environments);

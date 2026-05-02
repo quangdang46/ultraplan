@@ -5,6 +5,8 @@ import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  base: "/",
+  outDir: "/data/projects/ultraplan/packages/remote-control-server/web/dist",
   server: {
     host: "0.0.0.0",
     port: 5173,

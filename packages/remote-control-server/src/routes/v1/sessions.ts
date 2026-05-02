@@ -10,6 +10,7 @@ import {
 import { createWorkItem } from "../../services/work-dispatch";
 import { apiKeyAuth, acceptCliHeaders } from "../../auth/middleware";
 import { publishSessionEvent } from "../../services/transport";
+import { ensureSessionWorkspace } from "../../services/session-workspace";
 
 const app = new Hono();
 
@@ -18,6 +19,10 @@ app.post("/", acceptCliHeaders, apiKeyAuth, async (c) => {
   const body = await c.req.json();
   const username = c.get("username");
   const session = createSession({ ...body, username });
+  await ensureSessionWorkspace(session.id, {
+    cwd: body.cwd || null,
+    forceIsolation: true,
+  });
 
   // Create work item if environment is specified
   if (body.environment_id) {

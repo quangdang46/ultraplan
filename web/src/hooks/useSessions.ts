@@ -61,6 +61,19 @@ export function useSessions() {
     [client]
   )
 
+  const forkSession = useCallback(
+    async (sessionId: string): Promise<Session> => {
+      await ensureApiAuthenticated(client)
+      const session = await client.forkSession(sessionId)
+      setSessions((prev) => {
+        const next = prev.filter((item) => item.id !== session.id)
+        return [session, ...next]
+      })
+      return session
+    },
+    [client]
+  )
+
   const killSession = useCallback(
     async (sessionId: string): Promise<void> => {
       await ensureApiAuthenticated(client)
@@ -87,6 +100,7 @@ export function useSessions() {
     refetch: fetchSessions,
     loadHistory,
     createSession,
+    forkSession,
     killSession,
     renameSession,
   }

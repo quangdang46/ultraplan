@@ -10,32 +10,58 @@
  *
  * Forward-only — no destructive changes.
  */
-import { db } from "../db";
+import {
+  ensureColumn,
+  ensureIndex,
+  ensureTable,
+} from "./utils";
 
-db.exec(`
-  -- events: SSE replay cursor
-  ALTER TABLE events ADD COLUMN after_seq INTEGER;
-
-  -- workspaces: lifecycle_policy (extended cleanup semantics)
-  ALTER TABLE workspaces ADD COLUMN lifecycle_policy TEXT;
-
-  -- workspaces: materialization strategy (git_worktree | copy | temp_clone)
-  ALTER TABLE workspaces ADD COLUMN materialization_strategy TEXT;
-
-  -- workspaces: parent workspace for fork semantics
-  ALTER TABLE workspaces ADD COLUMN parent_workspace_id TEXT;
-
-  CREATE INDEX IF NOT EXISTS idx_workspaces_parent ON workspaces(parent_workspace_id);
-
-  -- workspace_repo_membership: multi-repo workspaces
-  CREATE TABLE IF NOT EXISTS workspace_repo_membership (
-    workspace_id TEXT NOT NULL,
-    repo_root    TEXT NOT NULL,
-    added_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (workspace_id, repo_root),
-    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+export function runWorkspaceLifecycleMigration(): void {
+  ensureColumn(
+    "events",
+    "after_seq",
+    "ALTER TABLE events ADD COLUMN after_seq INTEGER",
+  );
+  ensureColumn(
+    "workspaces",
+    "lifecycle_policy",
+    "ALTER TABLE workspaces ADD COLUMN lifecycle_policy TEXT",
+  );
+  ensureColumn(
+    "workspaces",
+    "materialization_strategy",
+    "ALTER TABLE workspaces ADD COLUMN materialization_strategy TEXT",
+  );
+  ensureColumn(
+    "workspaces",
+    "parent_workspace_id",
+    "ALTER TABLE workspaces ADD COLUMN parent_workspace_id TEXT",
   );
 
-  CREATE INDEX IF NOT EXISTS idx_wrm_workspace ON workspace_repo_membership(workspace_id);
-  CREATE INDEX IF NOT EXISTS idx_wrm_repo_root ON workspace_repo_membership(repo_root);
-`);
+  ensureIndex(
+    "idx_workspaces_parent",
+    "CREATE INDEX IF NOT EXISTS idx_workspaces_parent ON workspaces(parent_workspace_id)",
+  );
+
+  ensureTable(
+    "workspace_repo_membership",
+    `
+      CREATE TABLE workspace_repo_membership (
+        workspace_id TEXT NOT NULL,
+        repo_root TEXT NOT NULL,
+        added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (workspace_id, repo_root),
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+      )
+    `,
+  );
+
+  ensureIndex(
+    "idx_wrm_workspace",
+    "CREATE INDEX IF NOT EXISTS idx_wrm_workspace ON workspace_repo_membership(workspace_id)",
+  );
+  ensureIndex(
+    "idx_wrm_repo_root",
+    "CREATE INDEX IF NOT EXISTS idx_wrm_repo_root ON workspace_repo_membership(repo_root)",
+  );
+}

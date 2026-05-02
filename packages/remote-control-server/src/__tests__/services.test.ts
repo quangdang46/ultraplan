@@ -18,6 +18,33 @@ const mockConfig = {
 mock.module("../config", () => ({
   config: mockConfig,
   getBaseUrl: () => "http://localhost:3000",
+  resolveManagedSessionPaths: (sessionId: string, materializationStrategy = "worktree") => {
+    const root = "/tmp/rcs-test-workspace";
+    const workspacePath =
+      materializationStrategy === "workdir"
+        ? `${root}/workdirs/${sessionId}`
+        : `${root}/worktrees/${sessionId}`;
+    return {
+      sessionId,
+      sessionSlug: sessionId,
+      root,
+      sessionsRoot: `${root}/sessions`,
+      worktreesRoot: `${root}/worktrees`,
+      workdirsRoot: `${root}/workdirs`,
+      indexDbPath: `${root}/index.sqlite`,
+      sessionRoot: `${root}/sessions/${sessionId}`,
+      sessionJsonPath: `${root}/sessions/${sessionId}/session.json`,
+      stateJsonPath: `${root}/sessions/${sessionId}/state.json`,
+      workerJsonPath: `${root}/sessions/${sessionId}/worker.json`,
+      transcriptPath: `${root}/sessions/${sessionId}/transcript.ndjson`,
+      logsRoot: `${root}/sessions/${sessionId}/logs`,
+      eventsRoot: `${root}/sessions/${sessionId}/events`,
+      worktreePath: `${root}/worktrees/${sessionId}`,
+      workdirPath: `${root}/workdirs/${sessionId}`,
+      workspacePath,
+      materializationStrategy,
+    };
+  },
 }));
 
 import { storeReset, storeCreateEnvironment } from "../store";

@@ -2,6 +2,31 @@
 
 > Goal: Web UI = 100% CLI UX. This document tracks remaining gaps that still need to be fixed.
 
+## 0. Verified Closures
+
+- Root `/api/sessions` now provisions isolated session workspaces under `.workspace/` by default.
+- Git-backed sessions now materialize as dedicated worktrees with persisted branch metadata.
+- Root `/api/sessions/:id/fork` now creates a sibling workspace and clones persisted transcript/state.
+- Root search, MCP, and memory routes can now resolve from `sessionId -> workspace` instead of only raw `cwd`.
+- `/api/chat/stream` and `/api/sessions/:id/stream` now emit SSE keepalive frames so real clients survive >30s model/tool idle gaps.
+- Live POST chat stream events now carry stable `seqNum` metadata so the web client can dedupe attach/replay events after route sync.
+- Session history hydration now returns `lastSeqNum`, and the web route loader seeds that replay cursor before attaching SSE so reopen/reload does not duplicate assistant output.
+- Real verification on 2026-05-01 confirmed:
+  - `POST /api/sessions` returned `.workspace/worktrees/<sessionId>`
+  - `GET /api/state?sessionId=...` returned the same isolated cwd + branch
+  - a real model turn replied `WORKSPACE_OK`
+  - `POST /api/sessions/:id/fork` returned a sibling worktree and replayed transcript in `/messages`
+  - a real `curl` SSE turn returned `session_created -> message_start -> thinking_delta -> content_delta -> message_end`
+  - that same `curl` SSE turn stayed alive across the idle gap via keepalive frames and ended with `KEEPALIVE_OK`
+- Real verification on 2026-05-02 confirmed:
+  - `GET /api/sessions/:id/messages` returned `lastSeqNum=7` for a completed turn
+  - a browser reload of `/chat/<sessionId>` attached via `GET /api/sessions/:id/stream?from=7`
+  - the reloaded DOM contained exactly one assistant leaf node for `RCS_DUP_OK_43` instead of a duplicated replay
+  - a default-runtime `Edit` turn emitted a real `permission_request` with `old_string` / `new_string`
+  - `POST /api/chat/control` approved that request without overriding the tool input
+  - the isolated workspace file changed from `EDIT_ME_BEFORE` to `EDIT_ME_AFTER`
+  - the assistant completed the turn with `EDIT_PERMISSION_DONE`
+
 ---
 
 ## 1. Architecture Gaps
@@ -108,7 +133,7 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 | Inline permission card | ✅ In message flow | ✅ `PermissionPanel` | OK |
 | Approve/Deny buttons | ✅ `y/n` keyboard | ✅ Buttons | OK |
 | Edit tool input before approval | ✅ `e` key | ✅ `updatedInput` wired to API | OK |
-| Tool-specific permission card | ✅ Bash shows command, Edit shows diff | ⚠️ Exit-plan approval UI is covered; direct Edit diff approval remains unproven in the default runtime path | Medium |
+| Tool-specific permission card | ✅ Bash shows command, Edit shows diff | ✅ Real default-runtime `Edit` permission prompt + approval verified end to end. | OK |
 | Permission replay on reconnect | ✅ N/A (same process) | ✅ Replay via pending_permissions table | OK |
 | Always allow option | ✅ `a` key | ✅ `alwaysAllow` in API + UI | OK |
 
@@ -131,7 +156,7 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 |---------|-----|-------------|-----|----------|
 | Multi-line input | ✅ Shift+Enter | ✅ | OK |
 | File attachment (`@`) | ✅ Tab completion | ✅ Verified in real UI (`@` suggestions + file refs) | OK |
-| Slash commands | ✅ `/help`, `/model`, `/clear`... | ⚠️ Core web-native commands now handled locally; full CLI catalog is still partial | Medium |
+| Slash commands | ✅ `/help`, `/model`, `/clear`... | ⚠️ Attached-session and no-session slash commands now route through `/api/command/execute`; `/cost` + `/files` + `/release-notes` are backend-native, and both workspace workflow commands from `.claude/workflows/` plus project markdown commands from `.claude/commands/` now resolve instead of 404. Full CLI catalog is still partial | Medium |
 | Input disabled while streaming | ✅ | ✅ | OK |
 | Cancel stream (Escape) | ✅ Ctrl+C / Escape | ✅ `cancelStream` | OK |
 | Command history (↑↓) | ✅ | ✅ Implemented in ActionBar.tsx | OK |
@@ -150,8 +175,8 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 ### 3.4 Status & Info
 | Feature | CLI | Current Web | Gap | Priority |
 |---------|-----|-------------|-----|----------|
-| Token/context usage | ✅ `/cost` command | ✅ `UsageWarnings` component | OK |
-| Cost display | ✅ `/cost` | ✅ `UsageWarnings` component | OK |
+| Token/context usage | ✅ `/cost` command | ✅ `UsageWarnings` component + backend-native `/cost` for attached sessions | OK |
+| Cost display | ✅ `/cost` | ✅ `UsageWarnings` component + backend-native `/cost` for attached sessions | OK |
 | Model indicator | ✅ Shown in prompt | ✅ `ModelPicker` | OK |
 | Rate limit warning | ✅ | ✅ `UsageWarnings` shows `rateLimit` | OK |
 | Context window warning | ✅ Auto-compact notification | ✅ `UsageWarnings` shows `usedPct` | OK |
@@ -213,7 +238,7 @@ tool_start(A) → tool_start(B) → tool_result(A) → tool_result(B)
 16. ~~Rate limit + context window warnings~~ ✅ Done
 17. ~~Error retry mechanism~~ ✅ Done
 18. ~~Session status indicator (active/interrupted/idle)~~ ✅ Done
-19. ~~Full slash command parity~~ ⚠️ Core web-native parity landed; full CLI command catalog still partial
+19. ~~Full slash command parity~~ ⚠️ Attached-session and no-session slash commands now route through `/api/command/execute`; `/cost` + `/files` + `/release-notes` are backend-native, and both workspace workflow commands from `.claude/workflows/` plus project markdown commands from `.claude/commands/` now resolve instead of 404. Full CLI catalog parity is still partial
 
 ### P3 — Low (nice to have)
 20. ~~Command history (↑↓)~~ ✅ Done
@@ -253,10 +278,12 @@ Phase 4: Production Ready
 
 ### High Priority (not yet implemented)
 - **Phase 3 architecture**: Embed CLI logic in-process (subprocess → direct QueryEngine)
-- **Direct Edit approval parity**: default runtime path still does not surface a real Edit diff approval prompt end to end
 
 ### Medium Priority
-- Slash command full parity (security gates limit some commands)
+- Feature flags in RCS still depend on `bun:bundle` gating instead of an RCS-owned always-on contract
+- DB abstraction layer (SQLite/PostgreSQL) is still missing
+- Permission callbacks still depend on subprocess/Ink instead of backend-native EventBus handlers
+- Slash command full parity beyond current `/api/command/execute` coverage (many local CLI-only commands, user/global skills, richer custom command coverage, and security-gated commands remain partial)
 - Export conversation dialog verification
 
 ### Phase 3 Items (refactor, not bug)
@@ -267,4 +294,29 @@ Phase 4: Production Ready
 
 ---
 
-*Last updated: 2026-04-30 (After sync + merge + duplicate event fix)*
+*Last updated: 2026-05-02 (After backend-native /release-notes verification)*
+
+---
+
+## 7. Changes Applied 2026-05-02 (Session 2)
+
+### P0: Live Runtime State Updates — Complete
+- `PATCH /api/state` now forwards all three runtime knobs to the running CLI worker via `control_request`:
+  - `model` → `set_model`
+  - `permissionMode` → `set_permission_mode`
+  - `thinkingEffort` → `set_max_thinking_tokens` (via `effortToThinkingTokens` mapping)
+- 6 tests in `api-state-patch.test.ts`, all passing
+
+### Gap Closures
+- **EffortPicker**: Extended from 3 levels (low/medium/high) to 5 (low/medium/high/xhigh/max)
+- **PermissionModePicker**: New component added to PanelTop alongside ModelPicker and EffortPicker
+- **Slash command catalog**: Expanded from 55 to 67 commands. Added: effort, privacy-settings, hooks, export, usage-report, upgrade, ultra-review, context, copy, ide, rename, passes
+- **No-session fallback**: `workspace-access.ts` now uses `DEFAULT_WORKSPACE` env var before `process.cwd()`
+- **Legacy session migration**: `POST /api/admin/migrate-legacy-sessions` route (apiKeyAuth required) finds sessions without workspaces and materializes them
+- **Transcript block shapes**: Audited — `buildArtifact()` in `hydrateSessionMessages.ts` handles all block types generically, `Conversation.tsx` renders artifacts. No gaps found.
+
+### Remaining
+- Session runtime isolation still subprocess-based (Phase 3)
+- Not every possible CLI block shape is explicitly tested in rehydration
+- Slash command catalog still partial (CLI has ~90 commands, catalog has 67)
+- Legacy sessions can still exist until migration is run

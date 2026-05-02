@@ -73,6 +73,7 @@ export interface SessionResponse {
   created_at: number;
   updated_at: number;
   cwd?: string | null;
+  branch?: string | null;
   automation_state?: AutomationStateResponse;
 }
 

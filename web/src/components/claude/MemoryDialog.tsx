@@ -9,10 +9,11 @@ interface MemoryFile {
 
 type Props = {
   cwd?: string | null;
+  sessionId?: string | null;
   onClose: () => void;
 };
 
-export function MemoryDialog({ cwd, onClose }: Props) {
+export function MemoryDialog({ cwd, sessionId, onClose }: Props) {
   const [files, setFiles] = useState<MemoryFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeFile, setActiveFile] = useState<string | null>(null);
@@ -23,7 +24,10 @@ export function MemoryDialog({ cwd, onClose }: Props) {
   const load = async () => {
     setLoading(true);
     try {
-      const data = await getApiClient().getMemoryFiles(cwd ?? undefined);
+      const data = await getApiClient().getMemoryFiles(
+        cwd ?? undefined,
+        sessionId ?? undefined,
+      );
       setFiles(data.files);
       const nextActiveFile =
         data.files.find((file) => file.path === activeFile) ?? data.files[0] ?? null;
@@ -38,7 +42,7 @@ export function MemoryDialog({ cwd, onClose }: Props) {
 
   useEffect(() => {
     void load();
-  }, [cwd]);
+  }, [cwd, sessionId]);
 
   const handleFileSelect = (file: MemoryFile) => {
     setActiveFile(file.path);
@@ -50,7 +54,12 @@ export function MemoryDialog({ cwd, onClose }: Props) {
     if (!activeFile) return;
     setSaving(true);
     try {
-      await getApiClient().saveMemoryFile(activeFile, editContent, cwd ?? undefined);
+      await getApiClient().saveMemoryFile(
+        activeFile,
+        editContent,
+        cwd ?? undefined,
+        sessionId ?? undefined,
+      );
       setFiles((prev) =>
         prev.map((f) => f.path === activeFile ? { ...f, content: editContent } : f)
       );

@@ -35,9 +35,18 @@ export type CommandSuggestionsResponse = {
 
 export type ExecuteCommandRequest = {
   command: string
+  sessionId?: string
+  userMessageId?: string
 }
 
 export type ExecuteCommandResponse = {
-  output: string
+  success: boolean
+  output?: string
   clearConversation?: boolean
+  refreshHistory?: boolean
+  delegated?: boolean
+  executionMode?: 'prompt' | 'local' | 'local-jsx' | 'web-native'
+  webNative?: boolean
+  sessionId?: string
+  error?: string
 }

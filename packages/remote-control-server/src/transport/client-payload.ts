@@ -42,7 +42,7 @@ export function toClientPayload(event: SessionEvent): Record<string, unknown> {
           ? {
               response: {
                 behavior: "allow" as const,
-                ...(updatedInput ? { updatedInput } : {}),
+                updatedInput: updatedInput ?? {},
                 ...(updatedPermissions ? { updatedPermissions } : {}),
               },
             }

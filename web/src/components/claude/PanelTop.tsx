@@ -5,6 +5,7 @@ import { getApiClient } from "../../api/client";
 import { ensureApiAuthenticated } from "../../features/chat/streamTransport";
 import { ModelPicker } from "./ModelPicker";
 import { EffortPicker } from "./EffortPicker";
+import { PermissionModePicker } from "./PermissionModePicker";
 import { ExportDialog } from "./ExportDialog";
 
 type Props = {
@@ -106,10 +107,11 @@ export const PanelTop = ({
   const [cost, setCost] = useState<number | null>(null);
   const [model, setModel] = useState("claude-sonnet-4-6");
   const [effort, setEffort] = useState("medium");
+  const [permissionMode, setPermissionMode] = useState("default");
   const [exportOpen, setExportOpen] = useState(false);
+  const client = getApiClient();
 
   useEffect(() => {
-    const client = getApiClient();
     let cancelled = false;
 
     const loadState = async () => {
@@ -122,6 +124,8 @@ export const PanelTop = ({
             output: state.tokenUsage?.outputTokens ?? 0,
           });
           if (state.model) setModel(state.model);
+          if (state.thinkingEffort) setEffort(state.thinkingEffort);
+          if (state.permissionMode) setPermissionMode(state.permissionMode);
         }
       } catch {
         // ignore
@@ -147,7 +151,58 @@ export const PanelTop = ({
       void loadUsage();
     }, 10000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [sessionId]);
+  }, [client, sessionId]);
+
+  const updateModel = async (nextModel: string) => {
+    setModel(nextModel);
+    if (!sessionId) {
+      return;
+    }
+
+    try {
+      await ensureApiAuthenticated(client);
+      await client.updateState({
+        sessionId,
+        model: nextModel,
+      });
+    } catch {
+      // keep optimistic UI for now; polling will reconcile with backend state
+    }
+  };
+
+  const updateEffort = async (nextEffort: string) => {
+    setEffort(nextEffort);
+    if (!sessionId) {
+      return;
+    }
+
+    try {
+      await ensureApiAuthenticated(client);
+      await client.updateState({
+        sessionId,
+        thinkingEffort: nextEffort,
+      });
+    } catch {
+      // keep optimistic UI for now; polling will reconcile with backend state
+    }
+  };
+
+  const updatePermissionMode = async (nextMode: string) => {
+    setPermissionMode(nextMode);
+    if (!sessionId) {
+      return;
+    }
+
+    try {
+      await ensureApiAuthenticated(client);
+      await client.updateState({
+        sessionId,
+        permissionMode: nextMode,
+      });
+    } catch {
+      // keep optimistic UI for now; polling will reconcile with backend state
+    }
+  };
 
   const IconButton = ({
     onClick,
@@ -195,8 +250,9 @@ export const PanelTop = ({
       </div>
 
       <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
-        <ModelPicker model={model} onChange={setModel} />
-        <EffortPicker effort={effort} onChange={setEffort} />
+        <ModelPicker model={model} onChange={(nextModel) => void updateModel(nextModel)} />
+        <EffortPicker effort={effort} onChange={(nextEffort) => void updateEffort(nextEffort)} />
+        <PermissionModePicker permissionMode={permissionMode} onChange={(nextMode) => void updatePermissionMode(nextMode)} />
 
         {/* Token count + cost */}
         {tokens && (tokens.input > 0 || tokens.output > 0) && (

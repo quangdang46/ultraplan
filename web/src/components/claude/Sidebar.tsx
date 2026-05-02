@@ -17,6 +17,7 @@ type Props = {
   error: string | null;
   refetch: () => Promise<void>;
   createSession: () => Promise<Session>;
+  forkSession: (sessionId: string) => Promise<Session>;
   killSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
   collapsed?: boolean;
@@ -31,6 +32,7 @@ export const Sidebar = ({
   error,
   refetch,
   createSession,
+  forkSession,
   killSession,
   renameSession,
   collapsed = false,
@@ -59,6 +61,12 @@ export const Sidebar = ({
     e.stopPropagation()
     if (!confirm("Kill this session?")) return
     await killSession(id)
+  }
+
+  async function handleForkSession(e: React.MouseEvent, id: string) {
+    e.stopPropagation()
+    const session = await forkSession(id)
+    onSelect(session)
   }
 
   async function handleCreateSession() {
@@ -178,6 +186,7 @@ export const Sidebar = ({
             active={s.id === activeId}
             onSelect={() => onSelect(s)}
             onKill={(e) => void handleKillSession(e, s.id)}
+            onFork={(e) => void handleForkSession(e, s.id)}
             onStartRename={() => handleStartRename(s.id, s.title)}
             editingId={editingId}
             editName={editName}
@@ -204,6 +213,7 @@ const SessionRow = ({
   active,
   onSelect,
   onKill,
+  onFork,
   onStartRename,
   editingId,
   editName,
@@ -215,6 +225,7 @@ const SessionRow = ({
   active: boolean;
   onSelect: () => void;
   onKill: (e: React.MouseEvent) => void;
+  onFork: (e: React.MouseEvent) => void;
   onStartRename: () => void;
   editingId: string | null;
   editName: string;
@@ -265,6 +276,13 @@ const SessionRow = ({
             {session.pr}
           </span>
         )}
+        <button
+          onClick={onFork}
+          title="Fork session"
+          className="w-[18px] h-[18px] flex items-center justify-center rounded text-stone-gray hover:text-terracotta hover:bg-warm-sand transition-colors"
+        >
+          <GitBranch className="w-3 h-3" />
+        </button>
         <button
           onClick={(e) => { e.stopPropagation(); onStartRename() }}
           title="Rename"

@@ -1,5 +1,5 @@
 import { exists } from "node:fs/promises";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -12,10 +12,10 @@ import {
   storeUpsertSessionState,
   storeUpdateSession,
   storeCreateSession,
-  type WorkspaceRecord,
   type MaterializationStrategy,
 } from "../store";
 import { materializeWorkspace } from "./materialize";
+import { clonePersistedSessionEvents } from "./transport";
 
 export interface ForkOptions {
   newSessionTitle?: string;
@@ -26,6 +26,7 @@ export interface ForkOptions {
 export interface ForkWorkspaceResult {
   success: boolean;
   newWorkspacePath: string;
+  branch: string | null;
   error?: string;
 }
 
@@ -40,6 +41,7 @@ export async function forkSessionWorkspace(
     return {
       success: false,
       newWorkspacePath: "",
+      branch: null,
       error: "Source workspace not found",
     };
   }
@@ -48,6 +50,7 @@ export async function forkSessionWorkspace(
     return {
       success: false,
       newWorkspacePath: "",
+      branch: null,
       error: "Source workspace has no materialization strategy",
     };
   }
@@ -68,6 +71,7 @@ export async function forkSessionWorkspace(
       return {
         success: false,
         newWorkspacePath,
+        branch: null,
         error: `Repo root does not exist: ${repoRoot}`,
       };
     }
@@ -89,25 +93,39 @@ export async function forkSessionWorkspace(
       return {
         success: false,
         newWorkspacePath,
+        branch: null,
         error: materializeResult.error ?? "Git worktree fork failed",
       };
     }
+
+    return {
+      success: true,
+      newWorkspacePath,
+      branch,
+    };
   } else if (strategy === "copy") {
     if (!(await exists(sourcePath))) {
       return {
         success: false,
         newWorkspacePath,
+        branch: null,
         error: `Source path does not exist: ${sourcePath}`,
       };
     }
 
     const { cp } = await import("node:fs/promises");
     await cp(sourcePath, newWorkspacePath, { recursive: true });
+    return {
+      success: true,
+      newWorkspacePath,
+      branch: sourceWorkspace.branch,
+    };
   } else if (strategy === "temp_clone") {
     if (!(await exists(sourceRoot))) {
       return {
         success: false,
         newWorkspacePath,
+        branch: null,
         error: `Source root does not exist: ${sourceRoot}`,
       };
     }
@@ -124,16 +142,23 @@ export async function forkSessionWorkspace(
       return {
         success: false,
         newWorkspacePath,
+        branch: null,
         error: materializeResult.error ?? "Temp clone fork failed",
       };
     }
+
+    return {
+      success: true,
+      newWorkspacePath,
+      branch: sourceWorkspace.branch,
+    };
   }
 
   log(`[session-fork] workspace forked successfully to ${newWorkspacePath}`);
-
   return {
     success: true,
     newWorkspacePath,
+    branch: sourceWorkspace.branch,
   };
 }
 
@@ -187,12 +212,14 @@ export async function forkSession(
 
     let newWorkspacePath = "";
     let forkSuccess = false;
+    let forkedBranchName = sourceWorkspace.branch;
 
     if (forkStrategy) {
       const forkResult = await forkSessionWorkspace(sessionId, newSession.id);
       if (forkResult.success) {
         newWorkspacePath = forkResult.newWorkspacePath;
         forkSuccess = true;
+        forkedBranchName = forkResult.branch ?? sourceWorkspace.branch;
       } else {
         log(`[session-fork] workspace fork failed: ${forkResult.error}, creating workspace record anyway`);
         newWorkspacePath = `${sourceWorkspace.workspacePath}-fork-${newSession.id.slice(-8)}`;
@@ -204,7 +231,7 @@ export async function forkSession(
       sourceRoot: sourceWorkspace.sourceRoot,
       repoRoot: sourceWorkspace.repoRoot,
       baseRef: sourceWorkspace.baseRef,
-      branch: sourceWorkspace.branch ? `${sourceWorkspace.branch}-fork` : null,
+      branch: forkedBranchName,
       strategy: sourceWorkspace.strategy,
       workspacePath: newWorkspacePath || `${sourceWorkspace.workspacePath}-fork-${newSession.id.slice(-8)}`,
       cleanupPolicy: sourceWorkspace.cleanupPolicy,
@@ -227,6 +254,9 @@ export async function forkSession(
     });
     log(`[session-fork] session state copied`);
   }
+
+  const copiedEvents = clonePersistedSessionEvents(sessionId, newSession.id);
+  log(`[session-fork] cloned ${copiedEvents} persisted events`);
 
   storeUpdateSession(newSession.id, { status: "idle" });
 
