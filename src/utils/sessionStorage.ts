@@ -611,6 +611,10 @@ class Project {
         this.writeQueues.set(filePath, queue)
       }
       queue.push({ entry, resolve })
+      // Drop oldest entries when queue exceeds limit to prevent unbounded memory growth
+      if (queue.length >= 1000) {
+        const dropped = queue.splice(0, queue.length - 999)
+      }
       this.scheduleDrain()
     })
   }
